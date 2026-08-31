@@ -1,0 +1,14 @@
+{
+  "name": "heaven-sheets-bot",
+  "version": "1.0.0",
+  "description": "อ่านภาพ check-in จาก Discord แล้วกรอกคะแนนลง Google Sheet (Attendance_S4) โดยตรง",
+  "type": "module",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "googleapis": "^140.0.1",
+    "node-fetch": "^3.3.2",
+    "dotenv": "^16.4.5"
+  }
+}
