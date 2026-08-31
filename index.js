@@ -56,6 +56,26 @@ function getBossPoints(name) {
   return found ? BOSS_POINTS[found] : null;
 }
 
+// ระดับเลเวลของบอสแต่ละตัว ใช้สร้างหัวคอลัมน์ "Lv.XX ชื่อบอส" ให้อัตโนมัติตอนแทรกตารางใหม่
+const NAME_LEVEL = {
+  venatus:60, viorent:65, ego:70, clemantis:70, livera:75, araneo:75, undomiel:80,
+  saphirus:80, neutro:80, 'lady dalia':85, 'general aquleus':85, 'general aqueles':85,
+  thymele:85, amentis:88, 'baron braudmore':88, milavy:90, millavy:90, wannitas:93,
+  metus:93, duplican:93, shuliar:95, ringor:95, roderick:95, gareth:98, titore:98,
+  larba:98, catena:100, auraq:100, secreta:100, ordo:100, asta:100, supore:100,
+  chiflock:120, benji:120, libitina:130, lacases:130, rakejeth:130, icarutier:135,
+  icaruthia:135, mortti:135, motti:135, kamalia:135, tumer:140, tumier:140, nevaeh:140,
+  lucus:145,
+};
+const MANDATORY_BOSSES = new Set(['mortti','motti','icarutier','icaruthia','nevaeh','lucus']);
+
+function getBossLevel(name) {
+  const key = name.trim().toLowerCase();
+  if (NAME_LEVEL[key] !== undefined) return NAME_LEVEL[key];
+  const found = Object.keys(NAME_LEVEL).find(k => key.includes(k) || k.includes(key));
+  return found ? NAME_LEVEL[found] : 0;
+}
+
 /* ---------------- Google Sheets auth ---------------- */
 const serviceAccount = JSON.parse(GOOGLE_SERVICE_ACCOUNT);
 const auth = new google.auth.GoogleAuth({
@@ -130,6 +150,169 @@ function thaiDateToday() {
   return thai.toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
+let cachedSheetId = null;
+async function getSheetGid() {
+  if (cachedSheetId !== null) return cachedSheetId;
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+  const found = meta.data.sheets.find(s => s.properties.title === SHEET_NAME);
+  if (!found) throw new Error(`ไม่พบแท็บชื่อ "${SHEET_NAME}" ในสเปรดชีต`);
+  cachedSheetId = found.properties.sheetId;
+  return cachedSheetId;
+}
+
+function minutesDiff(dtTextA, dtTextB) {
+  const parse = (s) => {
+    const m = String(s).trim().match(/^(\d{4})-(\d{2})-(\d{2}) (\d{1,2}):(\d{2})/);
+    if (!m) return null;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])).getTime();
+  };
+  const a = parse(dtTextA), b = parse(dtTextB);
+  if (a === null || b === null) return Infinity;
+  return Math.abs(a - b) / 60000;
+}
+
+// อ่านภาพตารางบอสประจำวัน (จากทีม backend) แล้วแทรกคอลัมน์ใหม่เข้าตำแหน่งที่ถูกต้องตามวันเวลา
+async function handleScheduleImage(message, image) {
+  await message.react('⏳');
+  try {
+    const imgRes = await fetch(image.url);
+    const imgBuffer = await imgRes.arrayBuffer();
+    const base64 = Buffer.from(imgBuffer).toString('base64');
+    const mediaType = sniffImageType(imgBuffer) || image.contentType || 'image/png';
+
+    const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1500,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+            { type: 'text', text: 'นี่คือตารางบอสเกิดของวันหนึ่งในเกม อ่านวันที่จากหัวข้อ (รูปแบบ DD/MM/YYYY) แล้วแปลงเป็น YYYY-MM-DD และอ่านทุกแถวในตาราง ดึงเฉพาะ "ชื่อบอสภาษาอังกฤษ" (ข้อความในวงเล็บ) กับค่าคอลัมน์ "Spawn Time (UTC+7)" ตัดข้อความ "(spawn #N today)" ออกจากชื่อบอสด้วย ตอบเป็น JSON เท่านั้น ไม่มีคำอธิบายอื่น รูปแบบ {"date":"YYYY-MM-DD","rows":[{"boss":"Ego","time":"01:23"},{"boss":"Shuliar","time":"01:23"}]}' },
+          ],
+        }],
+      }),
+    });
+    const aiData = await aiRes.json();
+    if (aiData.error) {
+      await message.reply(`❌ เรียก AI ไม่สำเร็จ: ${aiData.error.message || JSON.stringify(aiData.error)}`);
+      await message.reactions.removeAll().catch(() => {});
+      return;
+    }
+    const textBlock = (aiData.content || []).find(c => c.type === 'text');
+    let parsed;
+    try { parsed = JSON.parse(textBlock.text.replace(/```json|```/g, '').trim()); }
+    catch (e) {
+      await message.reply('❌ อ่านตารางไม่สำเร็จ (รูปแบบข้อมูลไม่ถูกต้อง) ลองส่งภาพที่ชัดกว่านี้');
+      await message.reactions.removeAll().catch(() => {});
+      return;
+    }
+    const { date, rows } = parsed || {};
+    if (!date || !Array.isArray(rows) || !rows.length) {
+      await message.reply('❌ อ่านตารางไม่สำเร็จ ไม่พบวันที่หรือรายการบอสในภาพ');
+      await message.reactions.removeAll().catch(() => {});
+      return;
+    }
+
+    // หาโครงสร้างหัวตาราง (แถว Member / ชื่อบอส / วันที่)
+    const hdrRes = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:ZZ10` });
+    const hdrRows = hdrRes.data.values || [];
+    let labelRowIdx = -1, memberCol = -1;
+    for (let r = 0; r < Math.min(hdrRows.length, 10); r++) {
+      const idx = (hdrRows[r] || []).findIndex(c => (c || '').trim().toLowerCase() === 'member');
+      if (idx !== -1) { labelRowIdx = r; memberCol = idx; break; }
+    }
+    if (labelRowIdx === -1) {
+      await message.reply('❌ หาโครงสร้างตาราง (คอลัมน์ Member) ในชีตไม่เจอ');
+      await message.reactions.removeAll().catch(() => {});
+      return;
+    }
+    const bossRowIdx = labelRowIdx;      // แถวชื่อบอส (แถวเดียวกับ Member)
+    const dateRowIdx = labelRowIdx + 1;  // แถววันที่ (ถัดจาก Member)
+    const gid = await getSheetGid();
+
+    const sortedRows = rows
+      .filter(r => r && r.boss && r.time)
+      .map(r => ({ boss: String(r.boss).trim(), dt: `${date} ${String(r.time).trim()}` }))
+      .sort((a, b) => a.dt.localeCompare(b.dt));
+
+    let added = 0, skipped = 0, updated = 0;
+    for (const { boss, dt } of sortedRows) {
+      // ดึงข้อมูลสดทุกรอบ เผื่อคอลัมน์เลื่อนไปจากการแทรกรอบก่อนหน้า
+      const freshRes = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:ZZ10` });
+      const freshRows = freshRes.data.values || [];
+      const freshBossRow = freshRows[bossRowIdx] || [];
+      const freshDateRow = freshRows[dateRowIdx] || [];
+
+      let gdCol = freshBossRow.length;
+      for (let c = memberCol + 1; c < freshBossRow.length; c++) {
+        if ((freshBossRow[c] || '').toUpperCase().startsWith('GD')) { gdCol = c; break; }
+      }
+
+      const bossLower = boss.toLowerCase();
+      let closestCol = -1, closestDiff = Infinity, insertAt = gdCol;
+      for (let c = memberCol + 1; c < gdCol; c++) {
+        const cellBoss = (freshBossRow[c] || '').toLowerCase();
+        const cellDate = freshDateRow[c] || '';
+        if (cellBoss.includes(bossLower)) {
+          const diff = minutesDiff(cellDate, dt);
+          if (diff < closestDiff) { closestDiff = diff; closestCol = c; }
+        }
+        if (insertAt === gdCol && cellDate > dt) insertAt = c;
+      }
+
+      if (closestCol !== -1 && closestDiff <= 5) {
+        // ถือว่าเป็นบอสตัวเดียวกัน (ห่างกันไม่เกิน 5 นาที) → ปรับเวลาให้ตรงกับตารางล่าสุดแทนการแทรกใหม่
+        if (closestDiff === 0) { skipped++; continue; } // เวลาตรงเป๊ะอยู่แล้ว ไม่ต้องทำอะไร
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SPREADSHEET_ID,
+          range: `${SHEET_NAME}!${colToLetter(closestCol)}${dateRowIdx + 1}`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: { values: [[dt]] },
+        });
+        updated++;
+        continue;
+      }
+
+      const level = getBossLevel(boss);
+      const mandatory = MANDATORY_BOSSES.has(bossLower) || [...MANDATORY_BOSSES].some(m => bossLower.includes(m));
+      const headerText = `Lv.${level} ${boss}`;
+      const bg = mandatory ? { red: 0.698, green: 0.227, blue: 0.290 } : { red: 0.914, green: 0.769, blue: 0.416 };
+
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        requestBody: {
+          requests: [
+            { insertDimension: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: insertAt, endIndex: insertAt + 1 }, inheritFromBefore: false } },
+            { repeatCell: {
+                range: { sheetId: gid, startRowIndex: bossRowIdx, endRowIndex: dateRowIdx + 1, startColumnIndex: insertAt, endColumnIndex: insertAt + 1 },
+                cell: { userEnteredFormat: { backgroundColor: bg } },
+                fields: 'userEnteredFormat.backgroundColor',
+            } },
+          ],
+        },
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `${SHEET_NAME}!${colToLetter(insertAt)}${bossRowIdx + 1}:${colToLetter(insertAt)}${dateRowIdx + 1}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [[headerText], [dt]] },
+      });
+      added++;
+    }
+
+    await message.reactions.removeAll().catch(() => {});
+    await message.react('✅');
+    await message.reply(`✅ อัปเดตตารางบอสวันที่ ${date} แล้ว — เพิ่มคอลัมน์ใหม่ ${added} รายการ, ปรับเวลาให้ตรงตารางล่าสุด ${updated} รายการ, ข้ามซ้ำ ${skipped} รายการ`);
+  } catch (err) {
+    console.error(err);
+    await message.reactions.removeAll().catch(() => {});
+    try { await message.reply('❌ เกิดข้อผิดพลาดตอนอัปเดตตารางบอส: ' + err.message); } catch (e) {}
+  }
+}
+
 /* ---------------- Discord client ---------------- */
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
@@ -147,7 +330,7 @@ client.on('messageCreate', async (message) => {
 
     const bossNameRaw = message.content.trim();
     if (!bossNameRaw) {
-      await message.reply('⚠️ พิมพ์ชื่อบอสในข้อความเดียวกับที่แนบรูป เช่น พิมพ์ "Icarutier" แล้วแนบรูป check-in (ถ้าบอสนี้เกิดซ้ำวันเดียวกันหลายรอบ พิมพ์เวลากำกับด้วยได้ เช่น "Icarutier 20:00")');
+      await handleScheduleImage(message, image);
       return;
     }
     const typedTime = parseTypedTime(bossNameRaw);
