@@ -82,6 +82,12 @@ function sniffImageType(buffer) {
   return null;
 }
 
+// ดึงชื่อบอสภาษาอังกฤษออกมาใช้เทียบเสมอ (รองรับทั้งพิมพ์แค่ชื่ออังกฤษ และก็อปแบบ "ไทย (English)" มาทั้งดุ้น)
+function extractBossQuery(raw) {
+  const m = raw.match(/\(([A-Za-z0-9\s]+)\)/);
+  return (m ? m[1] : raw).trim();
+}
+
 function colToLetter(col) {
   let letter = '';
   col += 1;
@@ -119,13 +125,15 @@ client.on('messageCreate', async (message) => {
       await message.reply('⚠️ พิมพ์ชื่อบอสในข้อความเดียวกับที่แนบรูป เช่น พิมพ์ "Icarutier" แล้วแนบรูป check-in');
       return;
     }
-    const points = getBossPoints(bossNameRaw);
+    const bossQuery = extractBossQuery(bossNameRaw); // ชื่ออังกฤษล้วน ใช้เทียบทุกที่
+    const points = getBossPoints(bossQuery);
     if (points === null) {
       await message.reply(`❌ ไม่รู้จักคะแนนของบอส "${bossNameRaw}" — เช็คการสะกด หรือเพิ่มบอสนี้ในตาราง BOSS_POINTS ในโค้ดบอทก่อน`);
       return;
     }
 
     await message.react('⏳');
+
 
     // 1) อ่านภาพด้วย AI
     const imgRes = await fetch(image.url);
@@ -189,7 +197,7 @@ client.on('messageCreate', async (message) => {
     for (let c = memberCol + 1; c < bossNameRow.length; c++) {
       const bossCell = (bossNameRow[c] || '').toLowerCase();
       const dateCell = (labelDateRow[c] || '');
-      if (bossCell && bossCell.includes(bossNameRaw.toLowerCase()) && dateCell.startsWith(today)) {
+      if (bossCell && bossCell.includes(bossQuery.toLowerCase()) && dateCell.startsWith(today)) {
         candidates.push(c);
       }
     }
