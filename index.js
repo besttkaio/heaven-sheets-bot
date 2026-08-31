@@ -72,6 +72,16 @@ function levenshtein(a, b) {
   return dp[m][n];
 }
 
+// เช็คประเภทไฟล์จากเนื้อหาภาพจริง (ไม่เชื่อ label ที่ Discord ส่งมา เพราะบางทีบอกผิด)
+function sniffImageType(buffer) {
+  const b = Buffer.from(buffer);
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b.length >= 6 && b.toString('ascii', 0, 3) === 'GIF') return 'image/gif';
+  if (b.length >= 12 && b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
 function colToLetter(col) {
   let letter = '';
   col += 1;
@@ -121,7 +131,7 @@ client.on('messageCreate', async (message) => {
     const imgRes = await fetch(image.url);
     const imgBuffer = await imgRes.arrayBuffer();
     const base64 = Buffer.from(imgBuffer).toString('base64');
-    const mediaType = image.contentType || 'image/png';
+    const mediaType = sniffImageType(imgBuffer) || image.contentType || 'image/png';
     const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
