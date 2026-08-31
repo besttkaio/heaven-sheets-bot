@@ -168,23 +168,28 @@ client.on('messageCreate', async (message) => {
     const range = `${SHEET_NAME}!A1:ZZ500`;
     const sheetRes = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range });
     const rows = sheetRes.data.values || [];
-    const bossNameRow = rows[0] || [];   // แถวชื่อบอส
-    const labelDateRow = rows[1] || [];  // แถว No./Member/Score/วันที่
 
-    const memberCol = labelDateRow.findIndex(c => (c || '').trim().toLowerCase() === 'member');
-    if (memberCol === -1) {
-      await message.reply('❌ หาคอลัมน์ "Member" ในชีตไม่เจอ ตรวจสอบว่า SHEET_NAME ตั้งถูกต้องไหม');
+    // หาแถวที่มีคำว่า "Member" อัตโนมัติ (ไม่สมมติตำแหน่งตายตัว เผื่อชีตมีแถวหัวเรื่อง/แถวว่างแทรกอยู่ด้านบน)
+    let labelRowIdx = -1, memberCol = -1;
+    for (let r = 0; r < Math.min(rows.length, 10); r++) {
+      const idx = (rows[r] || []).findIndex(c => (c || '').trim().toLowerCase() === 'member');
+      if (idx !== -1) { labelRowIdx = r; memberCol = idx; break; }
+    }
+    if (labelRowIdx === -1) {
+      await message.reply('❌ หาคอลัมน์ "Member" ในชีตไม่เจอ (เช็คแถว 1-10) ตรวจสอบว่า SHEET_NAME ตั้งถูกต้องไหม');
       await message.reactions.removeAll().catch(() => {});
       return;
     }
+    const bossNameRow = rows[labelRowIdx] || [];        // แถวชื่อบอส (แถวเดียวกับ Member)
+    const labelDateRow = rows[labelRowIdx + 1] || [];   // แถววันที่ (แถวถัดจาก Member)
 
-    // 3) หาคอลัมน์ที่ตรงกับบอส + วันที่วันนี้
+    // 3) หาคอลัมน์ที่ตรงกับบอส + วันที่วันนี้ (ไล่ทุกคอลัมน์หลัง Member ไป ไม่สมมติระยะห่างตายตัว)
     const today = thaiDateToday();
     const candidates = [];
-    for (let c = memberCol + 2; c < bossNameRow.length; c++) {
+    for (let c = memberCol + 1; c < bossNameRow.length; c++) {
       const bossCell = (bossNameRow[c] || '').toLowerCase();
       const dateCell = (labelDateRow[c] || '');
-      if (bossCell.includes(bossNameRaw.toLowerCase()) && dateCell.startsWith(today)) {
+      if (bossCell && bossCell.includes(bossNameRaw.toLowerCase()) && dateCell.startsWith(today)) {
         candidates.push(c);
       }
     }
@@ -202,7 +207,7 @@ client.on('messageCreate', async (message) => {
 
     // 4) จับคู่ชื่อกับแถวสมาชิกในชีต แล้วเตรียมเขียนค่า
     const memberRows = {}; // name(lower) -> row index
-    for (let r = 2; r < rows.length; r++) {
+    for (let r = labelRowIdx + 2; r < rows.length; r++) {
       const name = (rows[r][memberCol] || '').trim();
       if (name) memberRows[name.toLowerCase()] = r;
     }
