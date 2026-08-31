@@ -30,15 +30,23 @@ if (!DISCORD_BOT_TOKEN || !CHECKIN_CHANNEL_ID || !ANTHROPIC_API_KEY || !GOOGLE_S
    ทุกคนที่เข้าร่วมบอสตัวเดียวกัน ได้ค่าเท่ากันตามนี้ ปรับแก้ตัวเลขได้ตามจริง
    ถ้าเจอชื่อบอสที่ไม่อยู่ในลิสต์นี้ บอทจะแจ้งเตือนแทนการเดา */
 const BOSS_POINTS = {
-  'venatus': 5, 'viorent': 5, 'ego': 5, 'clemantis': 5, 'livera': 5, 'araneo': 5,
-  'undomiel': 5, 'saphirus': 5, 'neutro': 5, 'lady dalia': 5, 'general aqueles': 5,
-  'general aquleus': 5, 'thymele': 5, 'amentis': 5, 'baron braudmore': 5, 'milavy': 5,
-  'millavy': 5, 'wannitas': 5, 'wannitus': 5, 'metus': 5, 'duplican': 5, 'shuliar': 5,
-  'ringor': 5, 'roderick': 5, 'gareth': 5, 'tiyore': 5, 'titore': 5, 'larba': 5,
-  'catena': 1.5, 'orgue': 1.5, 'auraq': 1.5, 'secreta': 1.5, 'ordo': 1.5, 'asta': 1.5,
-  'supore': 1.5, 'chiflock': 3, 'chaiflock': 3, 'benji': 3, 'libitina': 10,
-  'rakejeth': 10, 'lacases': 10, 'icarutier': 10, 'icaruthia': 10, 'motti': 10,
-  'kamalia': 5, 'nevaeh': 10, 'tumer': 10, 'tumier': 10, 'lucus': 10,
+  // บอสทั่วไป = 1 คะแนน
+  'venatus': 1, 'viorent': 1, 'ego': 1, 'clemantis': 1, 'livera': 1, 'araneo': 1,
+  'undomiel': 1, 'saphirus': 1, 'neutro': 1, 'lady dalia': 1, 'general aqueles': 1,
+  'general aquleus': 1, 'thymele': 1, 'amentis': 1, 'baron braudmore': 1, 'milavy': 1,
+  'millavy': 1, 'wannitas': 1, 'wannitus': 1, 'metus': 1, 'duplican': 1, 'shuliar': 1,
+  'ringor': 1, 'roderick': 1, 'gareth': 1, 'tiyore': 1, 'titore': 1, 'larba': 1,
+  // Boss Lv.100 = 1.5 คะแนน
+  'catena': 1.5, 'orgue': 1.5, 'secreta': 1.5, 'ordo': 1.5, 'asta': 1.5, 'supore': 1.5,
+  // Auraq Boss = 3 คะแนน (แยกจาก Lv.100 ทั่วไป)
+  'auraq': 3,
+  // Boss Lv.120 = 3 คะแนน
+  'chiflock': 3, 'chaiflock': 3, 'benji': 3,
+  // Boss Lv.135+ = 10 คะแนน
+  'libitina': 10, 'rakejeth': 10, 'lacases': 10, 'icarutier': 10, 'icaruthia': 10,
+  'motti': 10, 'kamalia': 10, 'nevaeh': 10, 'tumer': 10, 'tumier': 10, 'lucus': 10,
+  // Guild Dungeon = 5 คะแนน
+  'gd1': 5, 'gd2': 5, 'gd3': 5,
 };
 
 function getBossPoints(name) {
@@ -88,6 +96,23 @@ function extractBossQuery(raw) {
   return (m ? m[1] : raw).trim();
 }
 
+// ถ้าพิมพ์เวลากำกับมาด้วย (เช่น "Clemantis 10:30") ให้ดึงออกมาใช้จับคู่คอลัมน์ที่ถูกต้อง
+function parseTypedTime(raw) {
+  const m = raw.match(/\b(\d{1,2}):(\d{2})\b/);
+  if (!m) return null;
+  const h = parseInt(m[1], 10), mi = parseInt(m[2], 10);
+  if (h > 23 || mi > 59) return null;
+  return { minutes: h * 60 + mi, raw: m[0] };
+}
+
+// เวลาปัจจุบันตามเวลาไทย (UTC+7) เป็นนาทีนับจากเที่ยงคืน — ใช้ตอนไม่ได้พิมพ์เวลากำกับมา
+function thaiNowMinutes() {
+  const now = new Date();
+  const thai = new Date(now.getTime() + (7 * 60 - now.getTimezoneOffset()) * 60000);
+  const [hh, mm] = thai.toISOString().slice(11, 16).split(':').map(Number);
+  return hh * 60 + mm;
+}
+
 function colToLetter(col) {
   let letter = '';
   col += 1;
@@ -122,10 +147,12 @@ client.on('messageCreate', async (message) => {
 
     const bossNameRaw = message.content.trim();
     if (!bossNameRaw) {
-      await message.reply('⚠️ พิมพ์ชื่อบอสในข้อความเดียวกับที่แนบรูป เช่น พิมพ์ "Icarutier" แล้วแนบรูป check-in');
+      await message.reply('⚠️ พิมพ์ชื่อบอสในข้อความเดียวกับที่แนบรูป เช่น พิมพ์ "Icarutier" แล้วแนบรูป check-in (ถ้าบอสนี้เกิดซ้ำวันเดียวกันหลายรอบ พิมพ์เวลากำกับด้วยได้ เช่น "Icarutier 20:00")');
       return;
     }
-    const bossQuery = extractBossQuery(bossNameRaw); // ชื่ออังกฤษล้วน ใช้เทียบทุกที่
+    const typedTime = parseTypedTime(bossNameRaw);
+    const bossTextOnly = typedTime ? bossNameRaw.replace(typedTime.raw, '').trim() : bossNameRaw;
+    const bossQuery = extractBossQuery(bossTextOnly); // ชื่ออังกฤษล้วน ใช้เทียบทุกที่
     const points = getBossPoints(bossQuery);
     if (points === null) {
       await message.reply(`❌ ไม่รู้จักคะแนนของบอส "${bossNameRaw}" — เช็คการสะกด หรือเพิ่มบอสนี้ในตาราง BOSS_POINTS ในโค้ดบอทก่อน`);
@@ -206,12 +233,44 @@ client.on('messageCreate', async (message) => {
       await message.reactions.removeAll().catch(() => {});
       return;
     }
+
+    let targetCol = candidates[0];
+    let timeNote = '';
+
     if (candidates.length > 1) {
-      await message.reply(`⚠️ พบคอลัมน์ที่ตรงกับ "${bossNameRaw}" วันนี้มากกว่า 1 ช่อง (${candidates.map(c => colToLetter(c)).join(', ')}) — บอทไม่กล้าเดาเอง กรุณากรอกด้วยมือหรือระบุให้ชัดเจนกว่านี้`);
-      await message.reactions.removeAll().catch(() => {});
-      return;
+      // บอสตัวนี้เกิดหลายรอบวันเดียวกัน → ใช้เวลาที่พิมพ์กำกับ (ถ้ามี) ไม่งั้นใช้เวลาที่ส่งข้อความ เทียบหาคอลัมน์ที่เวลาใกล้สุด
+      const targetMinutes = typedTime ? typedTime.minutes : thaiNowMinutes();
+      const withDiff = candidates.map(c => {
+        const timePart = ((labelDateRow[c] || '').split(' ')[1] || '00:00');
+        const [hh, mm] = timePart.split(':').map(n => parseInt(n, 10) || 0);
+        const colMinutes = hh * 60 + mm;
+        let diff = Math.abs(colMinutes - targetMinutes);
+        diff = Math.min(diff, 1440 - diff); // กันกรณีข้ามเที่ยงคืน
+        return { c, diff, timePart };
+      }).sort((a, b) => a.diff - b.diff);
+
+      const best = withDiff[0], second = withDiff[1];
+      const closeEnough = best.diff <= 90;              // ห่างจากเวลาที่ใช้อ้างอิงไม่เกิน 90 นาที
+      const clearlyBest = !second || (second.diff - best.diff) >= 30; // ไม่สูสีกับตัวเลือกถัดไป
+
+      if (closeEnough && clearlyBest) {
+        targetCol = best.c;
+        timeNote = typedTime
+          ? `\n🕐 มีบอสตัวนี้หลายรอบวันนี้ — เลือกรอบ ${best.timePart} ตามเวลาที่พิมพ์กำกับ (${withDiff[0].timePart})`
+          : `\n🕐 มีบอสตัวนี้หลายรอบวันนี้ — เลือกรอบ ${best.timePart} ตามเวลาที่ส่งข้อความใกล้สุด`;
+      } else {
+        const list = withDiff.map(x => `${colToLetter(x.c)} (${x.timePart})`).join(', ');
+        await message.reply(`⚠️ พบคอลัมน์ที่ตรงกับ "${bossNameRaw}" วันนี้หลายรอบ และเวลาไม่ชัดเจนพอจะเลือกอัตโนมัติ: ${list}\nลองพิมพ์เวลากำกับให้ชัดเจนกว่านี้ เช่น "${bossQuery} ${withDiff[0].timePart}" หรือกรอกด้วยมือแทน`);
+        await message.reactions.removeAll().catch(() => {});
+        return;
+      }
     }
-    const targetCol = candidates[0];
+
+    // โบนัสกลางคืน: ถ้าบอสตายช่วง 02:00-07:00 (ตามเวลาในคอลัมน์ที่เลือก) ได้คะแนน x2
+    const resolvedTimePart = (labelDateRow[targetCol] || '').split(' ')[1] || '';
+    const resolvedHour = parseInt((resolvedTimePart.split(':')[0] || '99'), 10);
+    const isNightBonus = resolvedHour >= 2 && resolvedHour < 7;
+    const finalPoints = isNightBonus ? points * 2 : points;
 
     // 4) จับคู่ชื่อกับแถวสมาชิกในชีต แล้วเตรียมเขียนค่า
     const memberRows = {}; // name(lower) -> row index
@@ -254,7 +313,7 @@ client.on('messageCreate', async (message) => {
         if (isFuzzy) fuzzyMatched.push(`${n} → ${matchedName}`);
         else matched.push(n);
         const a1 = `${SHEET_NAME}!${colToLetter(targetCol)}${rowIdx + 1}`;
-        updates.push({ range: a1, values: [[points]] });
+        updates.push({ range: a1, values: [[finalPoints]] });
       } else {
         unmatched.push(n);
       }
@@ -271,8 +330,9 @@ client.on('messageCreate', async (message) => {
     await message.react('✅');
     const noteFuzzy = fuzzyMatched.length ? `\n🔎 จับคู่แบบใกล้เคียง (ช่วยตรวจสอบอีกที): ${fuzzyMatched.join(', ')}` : '';
     const noteUnmatched = unmatched.length ? `\n⚠️ ไม่พบชื่อในชีต: ${unmatched.join(', ')}` : '';
+    const nightNote = isNightBonus ? ` 🌙x2` : '';
     await message.reply(
-      `✅ กรอกคะแนนแล้ว — **${bossNameRaw}** (${points} pt) คอลัมน์ ${colToLetter(targetCol)} วันที่ ${today}\n` +
+      `✅ กรอกคะแนนแล้ว — **${bossNameRaw}** (${finalPoints} pt${nightNote}) คอลัมน์ ${colToLetter(targetCol)} วันที่ ${today}${timeNote}\n` +
       `บันทึกตรงชื่อ (${matched.length}): ${matched.join(', ')}${noteFuzzy}${noteUnmatched}`
     );
   } catch (err) {
