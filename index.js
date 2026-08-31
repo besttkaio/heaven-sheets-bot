@@ -162,7 +162,7 @@ client.on('messageCreate', async (message) => {
     await message.react('⏳');
 
 
-    // 1) อ่านภาพด้วย AI
+    // 1) อ่านภาพด้วย AI (แยกชื่อปกติ = เข้าร่วม / ชื่อสีเทาจาง = ขาด)
     const imgRes = await fetch(image.url);
     const imgBuffer = await imgRes.arrayBuffer();
     const base64 = Buffer.from(imgBuffer).toString('base64');
@@ -172,12 +172,12 @@ client.on('messageCreate', async (message) => {
       headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 500,
+        max_tokens: 600,
         messages: [{
           role: 'user',
           content: [
             { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-            { type: 'text', text: 'ดึงรายชื่อตัวละคร/สมาชิกทั้งหมดที่มองเห็นในภาพนี้ ที่มีสีเทา/จางกว่าปกติให้ข้ามไป (ไม่ได้เข้าร่วม) ตอบเป็น JSON array ของ string เท่านั้น เช่น ["Name1","Name2"] ถ้าไม่พบให้ตอบ []' },
+            { type: 'text', text: 'ดึงรายชื่อตัวละคร/สมาชิกทั้งหมดที่มองเห็นในภาพนี้ แยกเป็น 2 กลุ่ม: "attended" คือชื่อที่ขึ้นสีปกติ (เข้าร่วม) และ "absent" คือชื่อที่มีสีเทา/จางกว่าปกติ (ไม่ได้เข้าร่วม) ตอบเป็น JSON object เท่านั้น รูปแบบ {"attended":["Name1","Name2"],"absent":["Name3"]} ถ้ากลุ่มไหนไม่มีให้ใส่ array ว่าง []' },
           ],
         }],
       }),
@@ -190,10 +190,19 @@ client.on('messageCreate', async (message) => {
     }
     const textBlock = (aiData.content || []).find(c => c.type === 'text');
     let detectedNames = [];
+    let absentNames = [];
     if (textBlock) {
-      try { detectedNames = JSON.parse(textBlock.text.replace(/```json|```/g, '').trim()); } catch (e) {}
+      try {
+        const parsed = JSON.parse(textBlock.text.replace(/```json|```/g, '').trim());
+        if (Array.isArray(parsed)) {
+          detectedNames = parsed; // เผื่อ AI ตอบกลับเป็น array เปล่าๆ แบบเดิม
+        } else {
+          detectedNames = parsed.attended || [];
+          absentNames = parsed.absent || [];
+        }
+      } catch (e) {}
     }
-    if (!detectedNames.length) {
+    if (!detectedNames.length && !absentNames.length) {
       await message.reply('⚠️ สแกนภาพแล้วไม่พบชื่อเลย กรุณาตรวจสอบภาพหรือกรอกด้วยมือแทน');
       await message.reactions.removeAll().catch(() => {});
       return;
@@ -283,7 +292,7 @@ client.on('messageCreate', async (message) => {
     const matched = [];
     const fuzzyMatched = [];
     const unmatched = [];
-    detectedNames.forEach(n => {
+    function matchMemberRow(n) {
       const key = n.trim().toLowerCase();
       let rowIdx = memberRows[key];
       let isFuzzy = false;
@@ -293,29 +302,40 @@ client.on('messageCreate', async (message) => {
         const foundKey = Object.keys(memberRows).find(k => k.includes(key) || key.includes(k));
         if (foundKey) { rowIdx = memberRows[foundKey]; matchedName = foundKey; }
       }
-
       if (rowIdx === undefined) {
-        // ไม่เจอแบบตรง/แบบมีคำซ้อนกัน → ลองจับคู่แบบใกล้เคียง (เข้มงวด)
         let best = null, bestDist = Infinity;
         for (const k of Object.keys(memberRows)) {
           const d = levenshtein(key, k);
           if (d < bestDist) { bestDist = d; best = k; }
         }
-        const threshold = key.length <= 4 ? 1 : 2; // ชื่อสั้นยอมพลาดได้แค่ 1 ตัวอักษร ชื่อยาวยอมได้ 2 ตัว
-        if (best && bestDist <= threshold) {
-          rowIdx = memberRows[best];
-          matchedName = best;
-          isFuzzy = true;
-        }
+        const threshold = key.length <= 4 ? 1 : 2;
+        if (best && bestDist <= threshold) { rowIdx = memberRows[best]; matchedName = best; isFuzzy = true; }
       }
+      return rowIdx === undefined ? null : { rowIdx, matchedName, isFuzzy };
+    }
 
-      if (rowIdx !== undefined) {
-        if (isFuzzy) fuzzyMatched.push(`${n} → ${matchedName}`);
+    detectedNames.forEach(n => {
+      const m = matchMemberRow(n);
+      if (m) {
+        if (m.isFuzzy) fuzzyMatched.push(`${n} → ${m.matchedName}`);
         else matched.push(n);
-        const a1 = `${SHEET_NAME}!${colToLetter(targetCol)}${rowIdx + 1}`;
+        const a1 = `${SHEET_NAME}!${colToLetter(targetCol)}${m.rowIdx + 1}`;
         updates.push({ range: a1, values: [[finalPoints]] });
       } else {
         unmatched.push(n);
+      }
+    });
+
+    const absentMatched = [];
+    const absentUnmatched = [];
+    absentNames.forEach(n => {
+      const m = matchMemberRow(n);
+      if (m) {
+        absentMatched.push(m.isFuzzy ? `${n} → ${m.matchedName}` : n);
+        const a1 = `${SHEET_NAME}!${colToLetter(targetCol)}${m.rowIdx + 1}`;
+        updates.push({ range: a1, values: [[0]] });
+      } else {
+        absentUnmatched.push(n);
       }
     });
 
@@ -330,10 +350,12 @@ client.on('messageCreate', async (message) => {
     await message.react('✅');
     const noteFuzzy = fuzzyMatched.length ? `\n🔎 จับคู่แบบใกล้เคียง (ช่วยตรวจสอบอีกที): ${fuzzyMatched.join(', ')}` : '';
     const noteUnmatched = unmatched.length ? `\n⚠️ ไม่พบชื่อในชีต: ${unmatched.join(', ')}` : '';
+    const noteAbsent = absentMatched.length ? `\n⬜ ขาด (0 pt — สีเทาในภาพ): ${absentMatched.join(', ')}` : '';
+    const noteAbsentUnmatched = absentUnmatched.length ? `\n⚠️ ชื่อขาดที่ไม่พบในชีต: ${absentUnmatched.join(', ')}` : '';
     const nightNote = isNightBonus ? ` 🌙x2` : '';
     await message.reply(
       `✅ กรอกคะแนนแล้ว — **${bossNameRaw}** (${finalPoints} pt${nightNote}) คอลัมน์ ${colToLetter(targetCol)} วันที่ ${today}${timeNote}\n` +
-      `บันทึกตรงชื่อ (${matched.length}): ${matched.join(', ')}${noteFuzzy}${noteUnmatched}`
+      `บันทึกตรงชื่อ (${matched.length}): ${matched.join(', ')}${noteFuzzy}${noteUnmatched}${noteAbsent}${noteAbsentUnmatched}`
     );
   } catch (err) {
     console.error(err);
