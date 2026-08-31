@@ -56,6 +56,22 @@ const auth = new google.auth.GoogleAuth({
 });
 const sheets = google.sheets({ version: 'v4', auth });
 
+// เทียบความใกล้เคียงของชื่อ (จำนวนตัวอักษรที่ต้องแก้ให้เหมือนกัน ยิ่งน้อยยิ่งใกล้)
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
 function colToLetter(col) {
   let letter = '';
   col += 1;
@@ -122,6 +138,11 @@ client.on('messageCreate', async (message) => {
       }),
     });
     const aiData = await aiRes.json();
+    if (aiData.error) {
+      await message.reply(`❌ เรียก AI ไม่สำเร็จ: ${aiData.error.message || JSON.stringify(aiData.error)}`);
+      await message.reactions.removeAll().catch(() => {});
+      return;
+    }
     const textBlock = (aiData.content || []).find(c => c.type === 'text');
     let detectedNames = [];
     if (textBlock) {
@@ -178,16 +199,37 @@ client.on('messageCreate', async (message) => {
 
     const updates = [];
     const matched = [];
+    const fuzzyMatched = [];
     const unmatched = [];
     detectedNames.forEach(n => {
       const key = n.trim().toLowerCase();
       let rowIdx = memberRows[key];
+      let isFuzzy = false;
+      let matchedName = n;
+
       if (rowIdx === undefined) {
         const foundKey = Object.keys(memberRows).find(k => k.includes(key) || key.includes(k));
-        if (foundKey) rowIdx = memberRows[foundKey];
+        if (foundKey) { rowIdx = memberRows[foundKey]; matchedName = foundKey; }
       }
+
+      if (rowIdx === undefined) {
+        // ไม่เจอแบบตรง/แบบมีคำซ้อนกัน → ลองจับคู่แบบใกล้เคียง (เข้มงวด)
+        let best = null, bestDist = Infinity;
+        for (const k of Object.keys(memberRows)) {
+          const d = levenshtein(key, k);
+          if (d < bestDist) { bestDist = d; best = k; }
+        }
+        const threshold = key.length <= 4 ? 1 : 2; // ชื่อสั้นยอมพลาดได้แค่ 1 ตัวอักษร ชื่อยาวยอมได้ 2 ตัว
+        if (best && bestDist <= threshold) {
+          rowIdx = memberRows[best];
+          matchedName = best;
+          isFuzzy = true;
+        }
+      }
+
       if (rowIdx !== undefined) {
-        matched.push(n);
+        if (isFuzzy) fuzzyMatched.push(`${n} → ${matchedName}`);
+        else matched.push(n);
         const a1 = `${SHEET_NAME}!${colToLetter(targetCol)}${rowIdx + 1}`;
         updates.push({ range: a1, values: [[points]] });
       } else {
@@ -204,10 +246,11 @@ client.on('messageCreate', async (message) => {
 
     await message.reactions.removeAll().catch(() => {});
     await message.react('✅');
+    const noteFuzzy = fuzzyMatched.length ? `\n🔎 จับคู่แบบใกล้เคียง (ช่วยตรวจสอบอีกที): ${fuzzyMatched.join(', ')}` : '';
     const noteUnmatched = unmatched.length ? `\n⚠️ ไม่พบชื่อในชีต: ${unmatched.join(', ')}` : '';
     await message.reply(
       `✅ กรอกคะแนนแล้ว — **${bossNameRaw}** (${points} pt) คอลัมน์ ${colToLetter(targetCol)} วันที่ ${today}\n` +
-      `บันทึก (${matched.length}): ${matched.join(', ')}${noteUnmatched}`
+      `บันทึกตรงชื่อ (${matched.length}): ${matched.join(', ')}${noteFuzzy}${noteUnmatched}`
     );
   } catch (err) {
     console.error(err);
