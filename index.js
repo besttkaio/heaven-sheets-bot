@@ -133,6 +133,19 @@ function thaiNowMinutes() {
   return hh * 60 + mm;
 }
 
+// ถ้าพิมพ์วันที่กำกับมาด้วย (เช่น "Clemantis 2026-08-31" หรือ "Clemantis 31/08") ให้ดึงออกมาใช้แทน "วันนี้"
+function parseTypedDate(raw) {
+  const iso = raw.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (iso) return { date: iso[0], raw: iso[0] };
+  const dm = raw.match(/\b(\d{1,2})\/(\d{1,2})\b/);
+  if (dm) {
+    const dd = dm[1].padStart(2, '0'), mm = dm[2].padStart(2, '0');
+    const year = new Date().getFullYear(); // ปีปัจจุบัน — ถ้าข้ามปีให้พิมพ์แบบ YYYY-MM-DD เต็มแทน
+    return { date: `${year}-${mm}-${dd}`, raw: dm[0] };
+  }
+  return null;
+}
+
 function colToLetter(col) {
   let letter = '';
   col += 1;
@@ -336,8 +349,10 @@ client.on('messageCreate', async (message) => {
       await handleScheduleImage(message, image);
       return;
     }
-    const typedTime = parseTypedTime(bossNameRaw);
-    const bossTextOnly = typedTime ? bossNameRaw.replace(typedTime.raw, '').trim() : bossNameRaw;
+    const typedDate = parseTypedDate(bossNameRaw);
+    const afterDateText = typedDate ? bossNameRaw.replace(typedDate.raw, '').trim() : bossNameRaw;
+    const typedTime = parseTypedTime(afterDateText);
+    const bossTextOnly = typedTime ? afterDateText.replace(typedTime.raw, '').trim() : afterDateText;
     const bossQuery = extractBossQuery(bossTextOnly); // ชื่ออังกฤษล้วน ใช้เทียบทุกที่
     const points = getBossPoints(bossQuery);
     if (points === null) {
@@ -413,8 +428,8 @@ client.on('messageCreate', async (message) => {
     const bossNameRow = rows[labelRowIdx] || [];        // แถวชื่อบอส (แถวเดียวกับ Member)
     const labelDateRow = rows[labelRowIdx + 1] || [];   // แถววันที่ (แถวถัดจาก Member)
 
-    // 3) หาคอลัมน์ที่ตรงกับบอส + วันที่วันนี้ (ไล่ทุกคอลัมน์หลัง Member ไป ไม่สมมติระยะห่างตายตัว)
-    const today = thaiDateToday();
+    // 3) หาคอลัมน์ที่ตรงกับบอส + วันที่ (ใช้วันที่ที่พิมพ์กำกับมา ถ้ามี ไม่งั้นใช้วันนี้)
+    const today = typedDate ? typedDate.date : thaiDateToday();
     const candidates = [];
     for (let c = memberCol + 1; c < bossNameRow.length; c++) {
       const bossCell = (bossNameRow[c] || '').toLowerCase();
@@ -424,7 +439,7 @@ client.on('messageCreate', async (message) => {
       }
     }
     if (candidates.length === 0) {
-      await message.reply(`❌ หาคอลัมน์ของ "${bossNameRaw}" วันที่ ${today} ในชีตไม่เจอ — เช็คว่ามีคอลัมน์นี้เตรียมไว้ในชีตแล้วหรือยัง`);
+      await message.reply(`❌ หาคอลัมน์ของ "${bossNameRaw}" วันที่ ${today} ในชีตไม่เจอ — เช็คว่ามีคอลัมน์นี้เตรียมไว้ในชีตแล้วหรือยัง (ถ้าต้องการเช็คชื่อย้อนหลัง พิมพ์วันที่กำกับด้วยได้ เช่น "Clemantis 2026-08-31" หรือ "Clemantis 31/08")`);
       await message.reactions.removeAll().catch(() => {});
       return;
     }
@@ -433,7 +448,13 @@ client.on('messageCreate', async (message) => {
     let timeNote = '';
 
     if (candidates.length > 1) {
-      // บอสตัวนี้เกิดหลายรอบวันเดียวกัน → ใช้เวลาที่พิมพ์กำกับ (ถ้ามี) ไม่งั้นใช้เวลาที่ส่งข้อความ เทียบหาคอลัมน์ที่เวลาใกล้สุด
+      // บอสตัวนี้เกิดหลายรอบวันเดียวกัน → ใช้เวลาที่พิมพ์กำกับ (ถ้ามี) ไม่งั้นใช้เวลาที่ส่งข้อความ (เฉพาะกรณีเช็คของวันนี้เท่านั้น) เทียบหาคอลัมน์ที่เวลาใกล้สุด
+      if (!typedTime && typedDate) {
+        const list = candidates.map(c => `${colToLetter(c)} (${(labelDateRow[c] || '').split(' ')[1] || '?'})`).join(', ');
+        await message.reply(`⚠️ พบคอลัมน์ที่ตรงกับ "${bossNameRaw}" วันที่ ${today} หลายรอบ กรุณาพิมพ์เวลากำกับด้วยเพราะเป็นการเช็คย้อนหลัง เช่น "${bossQuery} ${today} ${(labelDateRow[candidates[0]] || '').split(' ')[1] || ''}": ${list}`);
+        await message.reactions.removeAll().catch(() => {});
+        return;
+      }
       const targetMinutes = typedTime ? typedTime.minutes : thaiNowMinutes();
       const withDiff = candidates.map(c => {
         const timePart = ((labelDateRow[c] || '').split(' ')[1] || '00:00');
@@ -451,11 +472,11 @@ client.on('messageCreate', async (message) => {
       if (closeEnough && clearlyBest) {
         targetCol = best.c;
         timeNote = typedTime
-          ? `\n🕐 มีบอสตัวนี้หลายรอบวันนี้ — เลือกรอบ ${best.timePart} ตามเวลาที่พิมพ์กำกับ (${withDiff[0].timePart})`
+          ? `\n🕐 มีบอสตัวนี้หลายรอบวันนั้น — เลือกรอบ ${best.timePart} ตามเวลาที่พิมพ์กำกับ`
           : `\n🕐 มีบอสตัวนี้หลายรอบวันนี้ — เลือกรอบ ${best.timePart} ตามเวลาที่ส่งข้อความใกล้สุด`;
       } else {
         const list = withDiff.map(x => `${colToLetter(x.c)} (${x.timePart})`).join(', ');
-        await message.reply(`⚠️ พบคอลัมน์ที่ตรงกับ "${bossNameRaw}" วันนี้หลายรอบ และเวลาไม่ชัดเจนพอจะเลือกอัตโนมัติ: ${list}\nลองพิมพ์เวลากำกับให้ชัดเจนกว่านี้ เช่น "${bossQuery} ${withDiff[0].timePart}" หรือกรอกด้วยมือแทน`);
+        await message.reply(`⚠️ พบคอลัมน์ที่ตรงกับ "${bossNameRaw}" วันนั้นหลายรอบ และเวลาไม่ชัดเจนพอจะเลือกอัตโนมัติ: ${list}\nลองพิมพ์เวลากำกับให้ชัดเจนกว่านี้ เช่น "${bossQuery} ${today} ${withDiff[0].timePart}" หรือกรอกด้วยมือแทน`);
         await message.reactions.removeAll().catch(() => {});
         return;
       }
