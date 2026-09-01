@@ -110,10 +110,53 @@ function sniffImageType(buffer) {
   return null;
 }
 
-// ดึงชื่อบอสภาษาอังกฤษออกมาใช้เทียบเสมอ (รองรับทั้งพิมพ์แค่ชื่ออังกฤษ และก็อปแบบ "ไทย (English)" มาทั้งดุ้น)
-function extractBossQuery(raw) {
-  const m = raw.match(/\(([A-Za-z0-9\s]+)\)/);
-  return (m ? m[1] : raw).trim();
+// ชื่อบอสภาษาไทย -> ชื่ออังกฤษมาตรฐาน (lowercase) ใช้ตอนพิมพ์เป็นไทยล้วนหรือสะกดคนละแบบ
+const THAI_BOSS_NAMES = {
+  'เอโก้': 'ego', 'เวนาตัส': 'venatus', 'เวนาดัส': 'venatus', 'วิโอเลนท์': 'viorent',
+  'คลาแมนทีส': 'clemantis', 'คลาแมนทัส': 'clemantis', 'ริเวอร์ร่า': 'livera',
+  'อาราเนโอ': 'araneo', 'อันโดมิเอล': 'undomiel', 'ซาฟิรัส': 'saphirus', 'ชาฟิรัส': 'saphirus',
+  'นิวโทร': 'neutro', 'เลดี้ดาเลีย': 'lady dalia', 'นายพลอะคูเลส': 'general aquleus',
+  'ไธเมล': 'thymele', 'อาเมนติส': 'amentis', 'อาเมนดิส': 'amentis',
+  'บารอนบราวด์มอร์': 'baron braudmore', 'มิลลาวี': 'milavy', 'วานิตัส': 'wannitas',
+  'วานิดัส': 'wannitas', 'เมทูส': 'metus', 'ดูพลิแคน': 'duplican', 'ชูเลียร์': 'shuliar',
+  'ริงกอร์': 'ringor', 'โรเดอริก': 'roderick', 'กาเลส': 'gareth', 'ธีธอร์': 'titore',
+  'ลาร์บา': 'larba', 'คาเธน่า': 'catena', 'ออร์ค': 'auraq', 'ออรัค': 'auraq',
+  'เซเครต้า': 'secreta', 'ออร์โด': 'ordo', 'แอสต้า': 'asta', 'ซูโพร์': 'supore',
+  'ไชฟล็อก': 'chiflock', 'เบนจี้': 'benji', 'ลิบิธีน่า': 'libitina', 'ลาคาเซส': 'lacases',
+  'อิคารูเธียร์': 'icarutier', 'อิคารูเทีย': 'icarutier', 'มอร์ตี้': 'motti',
+  'คามาเลีย': 'kamalia', 'ทูเมียร์': 'tumer', 'เนว่า': 'nevaeh', 'ลูคัส': 'lucus',
+};
+const CANON_BOSS_NAMES = [...new Set([...Object.keys(NAME_LEVEL), 'gd1', 'gd2', 'gd3'])];
+
+// รู้จักชื่อบอสได้ทั้งไทย/อังกฤษ/ผสมสองภาษา และเดาให้ถ้าสะกดเพี้ยนเล็กน้อย
+function resolveBossName(raw) {
+  const candidates = [];
+  const paren = raw.match(/\(([A-Za-z0-9\s]+)\)/);
+  if (paren) candidates.push(paren[1].trim());
+  candidates.push(raw.trim());
+
+  for (const cand of candidates) {
+    const low = cand.toLowerCase();
+    const engHit = CANON_BOSS_NAMES.find(c => low === c || low.includes(c) || c.includes(low));
+    if (engHit) return engHit;
+    const thaiHit = Object.keys(THAI_BOSS_NAMES).find(t => cand.includes(t) || t.includes(cand));
+    if (thaiHit) return THAI_BOSS_NAMES[thaiHit];
+  }
+
+  // ไม่เจอแบบตรง/มีคำซ้อนกัน → ลองจับคู่แบบใกล้เคียง (พิมพ์เพี้ยน) ทั้งไทยและอังกฤษ
+  const plain = (raw.replace(/\([^)]*\)/g, '').trim() || raw.trim());
+  const plainLower = plain.toLowerCase();
+  let best = null, bestDist = Infinity;
+  for (const c of CANON_BOSS_NAMES) {
+    const d = levenshtein(plainLower, c);
+    if (d < bestDist) { bestDist = d; best = c; }
+  }
+  for (const [thaiName, eng] of Object.entries(THAI_BOSS_NAMES)) {
+    const d = levenshtein(plain, thaiName);
+    if (d < bestDist) { bestDist = d; best = eng; }
+  }
+  const threshold = plainLower.length <= 5 ? 1 : (plainLower.length <= 8 ? 2 : 3);
+  return (best && bestDist <= threshold) ? best : null;
 }
 
 // ถ้าพิมพ์เวลากำกับมาด้วย (เช่น "Clemantis 10:30") ให้ดึงออกมาใช้จับคู่คอลัมน์ที่ถูกต้อง
@@ -353,7 +396,11 @@ client.on('messageCreate', async (message) => {
     const afterDateText = typedDate ? bossNameRaw.replace(typedDate.raw, '').trim() : bossNameRaw;
     const typedTime = parseTypedTime(afterDateText);
     const bossTextOnly = typedTime ? afterDateText.replace(typedTime.raw, '').trim() : afterDateText;
-    const bossQuery = extractBossQuery(bossTextOnly); // ชื่ออังกฤษล้วน ใช้เทียบทุกที่
+    const bossQuery = resolveBossName(bossTextOnly); // ชื่ออังกฤษมาตรฐาน รองรับไทย/อังกฤษ/สะกดเพี้ยน
+    if (!bossQuery) {
+      await message.reply(`❌ ไม่รู้จักชื่อบอส "${bossNameRaw}" — เช็คการสะกด หรือเพิ่มบอสนี้ในโค้ดบอทก่อน (NAME_LEVEL / THAI_BOSS_NAMES / BOSS_POINTS)`);
+      return;
+    }
     const points = getBossPoints(bossQuery);
     if (points === null) {
       await message.reply(`❌ ไม่รู้จักคะแนนของบอส "${bossNameRaw}" — เช็คการสะกด หรือเพิ่มบอสนี้ในตาราง BOSS_POINTS ในโค้ดบอทก่อน`);
