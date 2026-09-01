@@ -190,7 +190,7 @@ async function handleScheduleImage(message, image) {
           role: 'user',
           content: [
             { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-            { type: 'text', text: 'นี่คือตารางบอสเกิดของวันหนึ่งในเกม อ่านวันที่จากหัวข้อ ซึ่งเป็นรูปแบบ "วัน/เดือน/ปี" (DD/MM/YYYY) เสมอ ตัวอย่างสำคัญ: ถ้าหัวข้อเขียนว่า 01/09/2026 หมายถึง "วันที่ 1 เดือนกันยายน ปี 2026" (September 1, ไม่ใช่เดือนมกราคม ไม่ใช่ 9 มกราคม) ให้แปลงเป็น YYYY-MM-DD อย่างระมัดระวัง เช่น 01/09/2026 → "2026-09-01" และ 15/03/2026 → "2026-03-15" จากนั้นอ่านทุกแถวในตาราง ดึงเฉพาะ "ชื่อบอสภาษาอังกฤษ" (ข้อความในวงเล็บ) กับค่าคอลัมน์ "Spawn Time (UTC+7)" ตัดข้อความ "(spawn #N today)" ออกจากชื่อบอสด้วย ตอบเป็น JSON เท่านั้น ไม่มีคำอธิบายอื่น รูปแบบ {"date":"YYYY-MM-DD","rows":[{"boss":"Ego","time":"01:23"},{"boss":"Shuliar","time":"01:23"}]}' },
+            { type: 'text', text: 'นี่คือตารางบอสเกิดของวันหนึ่งในเกม หัวข้อสีแดงด้านบนมีวันที่อยู่ในวงเล็บ 3 ตัวเลขคั่นด้วย "/" ให้อ่านตัวเลข 3 ค่านั้นตามลำดับที่เห็นในภาพเป๊ะๆ (ห้ามตีความหรือแปลงเอง แค่ลอกตัวเลขตามลำดับซ้ายไปขวา) ใส่ในฟิลด์ "date_raw" รูปแบบ "XX/XX/XXXX" ตรงตามภาพ จากนั้นอ่านทุกแถวในตาราง ดึงเฉพาะ "ชื่อบอสภาษาอังกฤษ" (ข้อความในวงเล็บ) กับค่าคอลัมน์ "Spawn Time (UTC+7)" ตัดข้อความ "(spawn #N today)" ออกจากชื่อบอสด้วย ตอบเป็น JSON เท่านั้น ไม่มีคำอธิบายอื่น รูปแบบ {"date_raw":"02/09/2026","rows":[{"boss":"Ego","time":"01:23"},{"boss":"Shuliar","time":"01:23"}]}' },
           ],
         }],
       }),
@@ -209,12 +209,15 @@ async function handleScheduleImage(message, image) {
       await message.reactions.removeAll().catch(() => {});
       return;
     }
-    const { date, rows } = parsed || {};
-    if (!date || !Array.isArray(rows) || !rows.length) {
-      await message.reply('❌ อ่านตารางไม่สำเร็จ ไม่พบวันที่หรือรายการบอสในภาพ');
+    const { date_raw, rows } = parsed || {};
+    const dm = date_raw && String(date_raw).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!dm || !Array.isArray(rows) || !rows.length) {
+      await message.reply('❌ อ่านตารางไม่สำเร็จ ไม่พบวันที่ (รูปแบบ DD/MM/YYYY) หรือรายการบอสในภาพ');
       await message.reactions.removeAll().catch(() => {});
       return;
     }
+    const [, ddStr, mmStr, yyyy] = dm;
+    const date = `${yyyy}-${mmStr.padStart(2, '0')}-${ddStr.padStart(2, '0')}`; // DD/MM/YYYY -> YYYY-MM-DD แปลงในโค้ดเอง ไม่พึ่ง AI
 
     // หาโครงสร้างหัวตาราง (แถว Member / ชื่อบอส / วันที่)
     const hdrRes = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:ZZ10` });
