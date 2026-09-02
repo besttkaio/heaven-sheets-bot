@@ -52,7 +52,7 @@ const BOSS_POINTS = {
   'chiflock': 3, 'chaiflock': 3, 'benji': 3,
   // Boss Lv.135+ = 10 คะแนน
   'libitina': 10, 'rakejeth': 10, 'lacases': 10, 'icarutier': 10, 'icaruthia': 10,
-  'motti': 10, 'kamalia': 10, 'nevaeh': 10, 'tumer': 10, 'tumier': 10, 'lucus': 10,
+  'motti': 10, 'mortti': 10, 'kamalia': 10, 'nevaeh': 10, 'tumer': 10, 'tumier': 10, 'lucus': 10,
   // Guild Dungeon = 5 คะแนน
   'gd1': 5, 'gd2': 5, 'gd3': 5,
 };
@@ -72,10 +72,10 @@ const NAME_LEVEL = {
   metus:93, duplican:93, shuliar:95, ringor:95, roderick:95, gareth:98, titore:98,
   larba:98, catena:100, auraq:100, secreta:100, ordo:100, asta:100, supore:100,
   chiflock:120, benji:120, libitina:130, lacases:130, rakejeth:130, icarutier:135,
-  icaruthia:135, mortti:135, motti:135, kamalia:135, tumer:140, tumier:140, nevaeh:140,
+  mortti:135, kamalia:135, tumer:140, nevaeh:140,
   lucus:145,
 };
-const MANDATORY_BOSSES = new Set(['mortti','motti','icarutier','icaruthia','nevaeh','lucus']);
+const MANDATORY_BOSSES = new Set(['mortti','icarutier','nevaeh','lucus']);
 
 function getBossLevel(name) {
   const key = name.trim().toLowerCase();
@@ -131,7 +131,7 @@ const THAI_BOSS_NAMES = {
   'ลาร์บา': 'larba', 'คาเธน่า': 'catena', 'ออร์ค': 'auraq', 'ออรัค': 'auraq',
   'เซเครต้า': 'secreta', 'ออร์โด': 'ordo', 'แอสต้า': 'asta', 'ซูโพร์': 'supore',
   'ไชฟล็อก': 'chiflock', 'เบนจี้': 'benji', 'ลิบิธีน่า': 'libitina', 'ลาคาเซส': 'lacases',
-  'อิคารูเธียร์': 'icarutier', 'อิคารูเทีย': 'icarutier', 'มอร์ตี้': 'motti',
+  'อิคารูเธียร์': 'icarutier', 'อิคารูเทีย': 'icarutier', 'มอร์ตี้': 'mortti',
   'คามาเลีย': 'kamalia', 'ทูเมียร์': 'tumer', 'เนว่า': 'nevaeh', 'ลูคัส': 'lucus',
 };
 const CANON_BOSS_NAMES = [...new Set([...Object.keys(NAME_LEVEL), 'gd1', 'gd2', 'gd3'])];
@@ -170,7 +170,7 @@ function resolveBossName(raw) {
 /* ---------------- ขึ้นสัปดาห์ใหม่อัตโนมัติ ---------------- */
 // บอสตารางตายตัว (ไม่มีคูลดาวน์ ไม่ใช้ !kill) — วัน/เวลาเดิมทุกสัปดาห์ ใช้สร้างคอลัมน์ล่วงหน้าตอนขึ้นชีตใหม่
 const FIXED_SCHEDULE = {
-  motti: [['Wed', '18:00'], ['Sat', '18:00']],
+  mortti: [['Wed', '18:00'], ['Sat', '18:00']],
   icarutier: [['Tue', '20:00'], ['Fri', '20:00']],
   nevaeh: [['Sun', '21:00']],
   lucus: [['Sat', '21:00']],
@@ -308,7 +308,7 @@ async function createWeekSheet(name, monday, sunday, meta) {
   const FIRST_BOSS_COL0 = 8; // 0-indexed: A..H = 135(1),135(2),Nevaeh,Lucas,No.,Member,Score,CP
   const lastBossCol0 = FIRST_BOSS_COL0 + occurrences.length - 1;
   const colOf = (bossKey) => occurrences.map((o, i) => ({ o, i })).filter(x => x.o.boss === bossKey).map(x => FIRST_BOSS_COL0 + x.i);
-  const mottiIcarCols0 = [...colOf('motti'), ...colOf('icarutier')];
+  const mottiIcarCols0 = [...colOf('mortti'), ...colOf('icarutier')];
   const nevaehCols0 = colOf('nevaeh');
   const lucusCols0 = colOf('lucus');
 
