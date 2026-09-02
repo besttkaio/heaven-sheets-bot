@@ -673,8 +673,6 @@ async function handleCPSubmission(message, image) {
 
           ],
 
-        }],
-
       }),
 
     });
