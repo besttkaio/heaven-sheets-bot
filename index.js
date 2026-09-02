@@ -41,7 +41,7 @@ const BOSS_POINTS = {
   // บอสทั่วไป = 1 คะแนน
   'venatus': 1, 'viorent': 1, 'ego': 1, 'clemantis': 1, 'livera': 1, 'araneo': 1,
   'undomiel': 1, 'saphirus': 1, 'neutro': 1, 'lady dalia': 1, 'general aqueles': 1,
-  'general aquleus': 1, 'thymele': 1, 'amentis': 1, 'baron braudmore': 1, 'milavy': 1,
+  'general aquleus': 1, 'thymele': 1, 'amentis': 1, 'baron braudmore': 1, 'baron': 1, 'milavy': 1,
   'millavy': 1, 'wannitas': 1, 'wannitus': 1, 'metus': 1, 'duplican': 1, 'shuliar': 1,
   'ringor': 1, 'roderick': 1, 'gareth': 1, 'tiyore': 1, 'titore': 1, 'larba': 1,
   // Boss Lv.100 = 1.5 คะแนน
@@ -51,7 +51,7 @@ const BOSS_POINTS = {
   // Boss Lv.120 = 3 คะแนน
   'chiflock': 3, 'chaiflock': 3, 'benji': 3,
   // Boss Lv.135+ = 10 คะแนน
-  'libitina': 10, 'rakejeth': 10, 'lacases': 10, 'icarutier': 10, 'icaruthia': 10,
+  'libitina': 10, 'rakejeth': 10, 'lacases': 10, 'rakajeth': 10, 'icarutier': 10, 'icaruthia': 10,
   'motti': 10, 'mortti': 10, 'kamalia': 10, 'nevaeh': 10, 'tumer': 10, 'tumier': 10, 'lucus': 10,
   // Guild Dungeon = 5 คะแนน
   'gd1': 5, 'gd2': 5, 'gd3': 5,
@@ -68,14 +68,20 @@ function getBossPoints(name) {
 const NAME_LEVEL = {
   venatus:60, viorent:65, ego:70, clemantis:70, livera:75, araneo:75, undomiel:80,
   saphirus:80, neutro:80, 'lady dalia':85, 'general aquleus':85, 'general aqueles':85,
-  thymele:85, amentis:88, 'baron braudmore':88, milavy:90, millavy:90, wannitas:93,
+  thymele:85, amentis:88, baron:88, milavy:90, millavy:90, wannitas:93,
   metus:93, duplican:93, shuliar:95, ringor:95, roderick:95, gareth:98, titore:98,
   larba:98, catena:100, auraq:100, secreta:100, ordo:100, asta:100, supore:100,
-  chiflock:120, benji:120, libitina:130, lacases:130, rakejeth:130, icarutier:135,
-  mortti:135, kamalia:135, tumer:140, nevaeh:140,
+  chaiflock:120, benji:120, libitina:130, rakajeth:130, icaruthia:135,
+  motti:135, kamalia:135, tumier:140, nevaeh:140,
   lucus:145,
 };
-const MANDATORY_BOSSES = new Set(['mortti','icarutier','nevaeh','lucus']);
+const MANDATORY_BOSSES = new Set(['motti','icaruthia','nevaeh','lucus']);
+// สะกดแบบอื่นของชื่อเดียวกัน (ที่ต่างกันเกินกว่าระบบเดาใกล้เคียงจะจับได้) -> ชื่อมาตรฐาน (อิงตาม RaidScout)
+const ENGLISH_ALIASES = {
+  mortti: 'motti', icarutier: 'icaruthia', tumer: 'tumier',
+  lacases: 'rakajeth', rakejeth: 'rakajeth', chiflock: 'chaiflock',
+  'baron braudmore': 'baron',
+};
 
 function getBossLevel(name) {
   const key = name.trim().toLowerCase();
@@ -125,14 +131,14 @@ const THAI_BOSS_NAMES = {
   'อาราเนโอ': 'araneo', 'อันโดมิเอล': 'undomiel', 'ซาฟิรัส': 'saphirus', 'ชาฟิรัส': 'saphirus',
   'นิวโทร': 'neutro', 'เลดี้ดาเลีย': 'lady dalia', 'นายพลอะคูเลส': 'general aquleus',
   'ไธเมล': 'thymele', 'อาเมนติส': 'amentis', 'อาเมนดิส': 'amentis',
-  'บารอนบราวด์มอร์': 'baron braudmore', 'มิลลาวี': 'milavy', 'วานิตัส': 'wannitas',
+  'บารอนบราวด์มอร์': 'baron', 'มิลลาวี': 'milavy', 'วานิตัส': 'wannitas',
   'วานิดัส': 'wannitas', 'เมทูส': 'metus', 'ดูพลิแคน': 'duplican', 'ชูเลียร์': 'shuliar',
   'ริงกอร์': 'ringor', 'โรเดอริก': 'roderick', 'กาเลส': 'gareth', 'ธีธอร์': 'titore',
   'ลาร์บา': 'larba', 'คาเธน่า': 'catena', 'ออร์ค': 'auraq', 'ออรัค': 'auraq',
   'เซเครต้า': 'secreta', 'ออร์โด': 'ordo', 'แอสต้า': 'asta', 'ซูโพร์': 'supore',
-  'ไชฟล็อก': 'chiflock', 'เบนจี้': 'benji', 'ลิบิธีน่า': 'libitina', 'ลาคาเซส': 'lacases',
-  'อิคารูเธียร์': 'icarutier', 'อิคารูเทีย': 'icarutier', 'มอร์ตี้': 'mortti',
-  'คามาเลีย': 'kamalia', 'ทูเมียร์': 'tumer', 'เนว่า': 'nevaeh', 'ลูคัส': 'lucus',
+  'ไชฟล็อก': 'chaiflock', 'เบนจี้': 'benji', 'ลิบิธีน่า': 'libitina', 'ลาคาเซส': 'rakajeth',
+  'อิคารูเธียร์': 'icaruthia', 'อิคารูเทีย': 'icaruthia', 'มอร์ตี้': 'motti',
+  'คามาเลีย': 'kamalia', 'ทูเมียร์': 'tumier', 'เนว่า': 'nevaeh', 'ลูคัส': 'lucus',
 };
 const CANON_BOSS_NAMES = [...new Set([...Object.keys(NAME_LEVEL), 'gd1', 'gd2', 'gd3'])];
 
@@ -145,6 +151,8 @@ function resolveBossName(raw) {
 
   for (const cand of candidates) {
     const low = cand.toLowerCase();
+    const aliasHit = Object.keys(ENGLISH_ALIASES).find(a => low === a || low.includes(a) || a.includes(low));
+    if (aliasHit) return ENGLISH_ALIASES[aliasHit];
     const engHit = CANON_BOSS_NAMES.find(c => low === c || low.includes(c) || c.includes(low));
     if (engHit) return engHit;
     const thaiHit = Object.keys(THAI_BOSS_NAMES).find(t => cand.includes(t) || t.includes(cand));
@@ -159,6 +167,10 @@ function resolveBossName(raw) {
     const d = levenshtein(plainLower, c);
     if (d < bestDist) { bestDist = d; best = c; }
   }
+  for (const a of Object.keys(ENGLISH_ALIASES)) {
+    const d = levenshtein(plainLower, a);
+    if (d < bestDist) { bestDist = d; best = ENGLISH_ALIASES[a]; }
+  }
   for (const [thaiName, eng] of Object.entries(THAI_BOSS_NAMES)) {
     const d = levenshtein(plain, thaiName);
     if (d < bestDist) { bestDist = d; best = eng; }
@@ -170,24 +182,24 @@ function resolveBossName(raw) {
 /* ---------------- ขึ้นสัปดาห์ใหม่อัตโนมัติ ---------------- */
 // บอสตารางตายตัว (ไม่มีคูลดาวน์ ไม่ใช้ !kill) — วัน/เวลาเดิมทุกสัปดาห์ ใช้สร้างคอลัมน์ล่วงหน้าตอนขึ้นชีตใหม่
 const FIXED_SCHEDULE = {
-  mortti: [['Wed', '18:00'], ['Sat', '18:00']],
-  icarutier: [['Tue', '20:00'], ['Fri', '20:00']],
+  motti: [['Wed', '18:00'], ['Sat', '18:00']],
+  icaruthia: [['Tue', '20:00'], ['Fri', '20:00']],
   nevaeh: [['Sun', '21:00']],
   lucus: [['Sat', '21:00']],
   clemantis: [['Mon', '10:30'], ['Thu', '18:00']],
   saphirus: [['Sun', '16:00'], ['Tue', '10:30']],
   neutro: [['Tue', '18:00'], ['Thu', '10:30']],
   thymele: [['Mon', '18:00'], ['Wed', '10:30']],
-  milavy: [['Wed', '14:00']],
+  milavy: [['Sat', '14:00']],
   ringor: [['Sat', '16:00']],
   roderick: [['Fri', '18:00']],
   auraq: [['Fri', '21:00'], ['Wed', '20:00']],
-  chiflock: [['Sun', '14:00']],
+  chaiflock: [['Sun', '14:00']],
   benji: [['Sun', '20:00']],
   libitina: [['Mon', '20:00'], ['Sat', '20:00']],
-  lacases: [['Tue', '21:00'], ['Sun', '18:00']],
+  rakajeth: [['Tue', '21:00'], ['Sun', '18:00']],
   kamalia: [['Thu', '20:00']],
-  tumer: [['Sun', '18:00']],
+  tumier: [['Sun', '18:00']],
 };
 const DAY_INDEX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -308,7 +320,7 @@ async function createWeekSheet(name, monday, sunday, meta) {
   const FIRST_BOSS_COL0 = 8; // 0-indexed: A..H = 135(1),135(2),Nevaeh,Lucas,No.,Member,Score,CP
   const lastBossCol0 = FIRST_BOSS_COL0 + occurrences.length - 1;
   const colOf = (bossKey) => occurrences.map((o, i) => ({ o, i })).filter(x => x.o.boss === bossKey).map(x => FIRST_BOSS_COL0 + x.i);
-  const mottiIcarCols0 = [...colOf('mortti'), ...colOf('icarutier')];
+  const mottiIcarCols0 = [...colOf('motti'), ...colOf('icaruthia')];
   const nevaehCols0 = colOf('nevaeh');
   const lucusCols0 = colOf('lucus');
 
@@ -738,7 +750,7 @@ async function checkUpcomingSpawns() {
 // คูลดาวน์ (ชั่วโมง) ของบอสแบบ "รอบเกิด" เท่านั้น — บอสตารางตายตัวไม่ต้องมีในนี้ (ไม่ใช้ !kill)
 const COOLDOWN_HOURS = {
   venatus: 10, viorent: 10, ego: 21, livera: 24, araneo: 24, undomiel: 24,
-  'general aquleus': 29, 'general aqueles': 29, amentis: 29, 'baron braudmore': 32,
+  'general aquleus': 29, 'general aqueles': 29, amentis: 29, baron: 32,
   wannitas: 48, metus: 48, duplican: 48, gareth: 32, shuliar: 35, titore: 37,
   larba: 35, catena: 35, secreta: 62, ordo: 62, asta: 62, supore: 62, 'lady dalia': 18,
 };
@@ -833,6 +845,65 @@ async function insertOrUpdateBossColumn(bossQuery, dt) {
 }
 
 // คำสั่ง !kill <boss> [HH:MM] [yesterday|today] — คำนวณเวลาเกิดรอบถัดไปจากคูลดาวน์ แล้วแทรก/อัปเดตคอลัมน์ให้เอง
+// คำสั่ง !fixnames — ไล่เช็คหัวคอลัมน์บอสทั้งหมดในชีตปัจจุบัน แก้ชื่อที่สะกดไม่ตรงมาตรฐานให้ถูกต้อง
+async function handleFixNamesCommand(message) {
+  await message.react('⏳');
+  try {
+    await ensureActiveSheet();
+    const hdrRes = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:ZZ10` });
+    const hdrRows = hdrRes.data.values || [];
+    let labelRowIdx = -1, memberCol = -1;
+    for (let r = 0; r < Math.min(hdrRows.length, 10); r++) {
+      const idx = (hdrRows[r] || []).findIndex(c => (c || '').trim().toLowerCase() === 'member');
+      if (idx !== -1) { labelRowIdx = r; memberCol = idx; break; }
+    }
+    if (labelRowIdx === -1) {
+      await message.reply('❌ หาคอลัมน์ Member ในชีตไม่เจอ');
+      await message.reactions.removeAll().catch(() => {});
+      return;
+    }
+    const bossRow = hdrRows[labelRowIdx] || [];
+
+    const updates = [];
+    const changes = [];
+    for (let c = memberCol + 1; c < bossRow.length; c++) {
+      const cellText = (bossRow[c] || '').trim();
+      if (!cellText || cellText.toUpperCase().startsWith('GD')) continue;
+      const m = cellText.match(/^Lv\.(\d+)\s+(.+)$/i);
+      const namePart = m ? m[2] : cellText;
+      const levelPart = m ? m[1] : String(getBossLevel(namePart));
+      const canonical = resolveBossName(namePart);
+      if (!canonical) continue; // ไม่รู้จัก ข้ามไป ไม่แตะ
+      const correctText = `Lv.${levelPart} ${canonical.charAt(0).toUpperCase() + canonical.slice(1)}`;
+      if (correctText !== cellText) {
+        updates.push({ range: `${SHEET_NAME}!${colToLetter(c)}${labelRowIdx + 1}`, values: [[correctText]] });
+        changes.push(`${cellText} → ${correctText}`);
+      }
+    }
+
+    if (updates.length) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        requestBody: { valueInputOption: 'USER_ENTERED', data: updates },
+      });
+    }
+
+    await message.reactions.removeAll().catch(() => {});
+    await message.react('✅');
+    if (!changes.length) {
+      await message.reply('✅ ตรวจสอบแล้ว — ชื่อบอสในชีตสะกดถูกต้องหมดทุกคอลัมน์อยู่แล้ว ไม่มีอะไรต้องแก้');
+    } else {
+      const preview = changes.slice(0, 20).join('\n');
+      const more = changes.length > 20 ? `\n...และอีก ${changes.length - 20} รายการ` : '';
+      await message.reply(`✅ แก้ไขชื่อบอสแล้ว ${changes.length} คอลัมน์:\n${preview}${more}`);
+    }
+  } catch (err) {
+    console.error(err);
+    await message.reactions.removeAll().catch(() => {});
+    try { await message.reply('❌ เกิดข้อผิดพลาด: ' + err.message); } catch (e) {}
+  }
+}
+
 async function handleKillCommand(message) {
   const raw = message.content.replace(/^!kill\s*/i, '');
   const { bossText, timeStr, explicitDay } = parseKillArgs(raw);
@@ -894,6 +965,11 @@ client.on('messageCreate', async (message) => {
 
     if (COMMANDS_CHANNEL_ID && message.channel.id === COMMANDS_CHANNEL_ID && /^!kill\b/i.test(message.content.trim())) {
       await handleKillCommand(message);
+      return;
+    }
+
+    if (COMMANDS_CHANNEL_ID && message.channel.id === COMMANDS_CHANNEL_ID && /^!fixnames\b/i.test(message.content.trim())) {
+      await handleFixNamesCommand(message);
       return;
     }
 
