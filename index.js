@@ -10,6 +10,9 @@ ANTHROPIC_API_KEY       = API key จาก console.anthropic.com
 GOOGLE_SERVICE_ACCOUNT  = เนื้อหา JSON ทั้งไฟล์ของ Service Account key (บรรทัดเดียว)
 SPREADSHEET_ID          = ID จาก URL ของ Google Sheet (docs.google.com/spreadsheets/d/{ID}/edit)
 SHEET_NAME              = ชื่อแท็บชีตที่จะเขียนลง (เช่น GangDuHee_W1)
+CP_CHANNEL_ID           = (ไม่บังคับ) Channel ID ห้องลง CP พร้อมภาพยืนยัน
+ALERT_CHANNEL_ID        = (ไม่บังคับ) Channel ID ห้องที่บอทจะแจ้งเตือนก่อนบอสเกิด
+COMMANDS_CHANNEL_ID     = (ไม่บังคับ) Channel ID ห้องสำหรับพิมพ์คำสั่ง เช่น !kill
 ------------------------------------------------------------------ */
 
 const {
@@ -18,13 +21,18 @@ const {
   ANTHROPIC_API_KEY,
   GOOGLE_SERVICE_ACCOUNT,
   SPREADSHEET_ID,
-  SHEET_NAME,
+  SHEET_NAME: SHEET_NAME_ENV, // ใช้เป็นชีตต้นทาง "ครั้งแรก" เท่านั้น (คัดลอกรายชื่อสมาชิก) หลังจากนั้นระบบคำนวณชื่อชีตสัปดาห์เอง
+  CP_CHANNEL_ID,
+  ALERT_CHANNEL_ID,
+  COMMANDS_CHANNEL_ID,
 } = process.env;
+let SHEET_NAME = SHEET_NAME_ENV || null; // จะถูกอัปเดตอัตโนมัติทุกสัปดาห์โดย ensureActiveSheet()
 
-if (!DISCORD_BOT_TOKEN || !CHECKIN_CHANNEL_ID || !ANTHROPIC_API_KEY || !GOOGLE_SERVICE_ACCOUNT || !SPREADSHEET_ID || !SHEET_NAME) {
+if (!DISCORD_BOT_TOKEN || !CHECKIN_CHANNEL_ID || !ANTHROPIC_API_KEY || !GOOGLE_SERVICE_ACCOUNT || !SPREADSHEET_ID) {
   console.error('❌ ตั้งค่า Environment Variables ไม่ครบ');
   process.exit(1);
 }
+const ALERT_MINUTES = 5;
 
 /* ---------------- ตารางคะแนนต่อบอส (จากกติกากิลด์ HEAVEN) ----------------
    ทุกคนที่เข้าร่วมบอสตัวเดียวกัน ได้ค่าเท่ากันตามนี้ ปรับแก้ตัวเลขได้ตามจริง
@@ -159,6 +167,57 @@ function resolveBossName(raw) {
   return (best && bestDist <= threshold) ? best : null;
 }
 
+/* ---------------- ขึ้นสัปดาห์ใหม่อัตโนมัติ ---------------- */
+// บอสตารางตายตัว (ไม่มีคูลดาวน์ ไม่ใช้ !kill) — วัน/เวลาเดิมทุกสัปดาห์ ใช้สร้างคอลัมน์ล่วงหน้าตอนขึ้นชีตใหม่
+const FIXED_SCHEDULE = {
+  motti: [['Wed', '18:00'], ['Sat', '18:00']],
+  icarutier: [['Tue', '20:00'], ['Fri', '20:00']],
+  nevaeh: [['Sun', '21:00']],
+  lucus: [['Sat', '21:00']],
+  clemantis: [['Mon', '10:30'], ['Thu', '18:00']],
+  saphirus: [['Sun', '16:00'], ['Tue', '10:30']],
+  neutro: [['Tue', '18:00'], ['Thu', '10:30']],
+  thymele: [['Mon', '18:00'], ['Wed', '10:30']],
+  milavy: [['Wed', '14:00']],
+  ringor: [['Sat', '16:00']],
+  roderick: [['Fri', '18:00']],
+  auraq: [['Fri', '21:00'], ['Wed', '20:00']],
+  chiflock: [['Sun', '14:00']],
+  benji: [['Sun', '20:00']],
+  libitina: [['Mon', '20:00'], ['Sat', '20:00']],
+  lacases: [['Tue', '21:00'], ['Sun', '18:00']],
+  kamalia: [['Thu', '20:00']],
+  tumer: [['Sun', '18:00']],
+};
+const DAY_INDEX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// หาวันจันทร์/อาทิตย์ของสัปดาห์ปัจจุบัน (จาก "วันนี้" แบบ Thai-anchored)
+function getWeekBounds(now) {
+  const day = now.getUTCDay(); // 0=อาทิตย์
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + diffToMonday));
+  const sunday = new Date(Date.UTC(monday.getUTCFullYear(), monday.getUTCMonth(), monday.getUTCDate() + 6));
+  return { monday, sunday };
+}
+function weekSheetName(monday, sunday) {
+  return `Week_${monday.getUTCDate()}${MONTH_ABBR[monday.getUTCMonth()]}-${sunday.getUTCDate()}${MONTH_ABBR[sunday.getUTCMonth()]}`;
+}
+// สร้างรายการคอลัมน์บอสตารางตายตัวทั้งหมดของสัปดาห์ที่ขึ้นต้นด้วย monday ที่กำหนด
+function buildWeekOccurrences(monday) {
+  const occ = [];
+  for (const [boss, slots] of Object.entries(FIXED_SCHEDULE)) {
+    for (const [day, time] of slots) {
+      const dayOffset = (DAY_INDEX[day] - 1 + 7) % 7; // จันทร์ = offset 0
+      const [h, m] = time.split(':').map(Number);
+      const dt = new Date(Date.UTC(monday.getUTCFullYear(), monday.getUTCMonth(), monday.getUTCDate() + dayOffset, h, m));
+      occ.push({ boss, dt });
+    }
+  }
+  occ.sort((a, b) => a.dt.getTime() - b.dt.getTime());
+  return occ;
+}
+
 // ถ้าพิมพ์เวลากำกับมาด้วย (เช่น "Clemantis 10:30") ให้ดึงออกมาใช้จับคู่คอลัมน์ที่ถูกต้อง
 function parseTypedTime(raw) {
   const m = raw.match(/\b(\d{1,2}):(\d{2})\b/);
@@ -216,6 +275,122 @@ async function getSheetGid() {
   return cachedSheetId;
 }
 
+// สร้างชีตสัปดาห์ใหม่: หัวตาราง + คอลัมน์บอสตารางตายตัวของสัปดาห์นั้น + คัดลอกรายชื่อสมาชิกจากสัปดาห์ก่อนหน้า (Score/CP เริ่มใหม่)
+async function createWeekSheet(name, monday, sunday, meta) {
+  // หาชีตต้นทางสำหรับคัดลอกรายชื่อสมาชิก: สัปดาห์ก่อนหน้าก่อน ถ้าไม่มีค่อย fallback ไปชีตที่ตั้งไว้ตอนแรกสุด (SHEET_NAME_ENV)
+  const prevMonday = new Date(Date.UTC(monday.getUTCFullYear(), monday.getUTCMonth(), monday.getUTCDate() - 7));
+  const prevSunday = new Date(Date.UTC(prevMonday.getUTCFullYear(), prevMonday.getUTCMonth(), prevMonday.getUTCDate() + 6));
+  const prevName = weekSheetName(prevMonday, prevSunday);
+  let sourceName = null;
+  if (meta.data.sheets.some(s => s.properties.title === prevName)) sourceName = prevName;
+  else if (SHEET_NAME_ENV && meta.data.sheets.some(s => s.properties.title === SHEET_NAME_ENV)) sourceName = SHEET_NAME_ENV;
+
+  let memberNames = [];
+  if (sourceName) {
+    try {
+      const srcRes = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${sourceName}!A1:ZZ2000` });
+      const srcRows = srcRes.data.values || [];
+      let srcLabelRow = -1, srcMemberCol = -1;
+      for (let r = 0; r < Math.min(srcRows.length, 10); r++) {
+        const idx = (srcRows[r] || []).findIndex(c => (c || '').trim().toLowerCase() === 'member');
+        if (idx !== -1) { srcLabelRow = r; srcMemberCol = idx; break; }
+      }
+      if (srcLabelRow !== -1) {
+        for (let r = srcLabelRow + 2; r < srcRows.length; r++) {
+          const nm = (srcRows[r][srcMemberCol] || '').trim();
+          if (nm) memberNames.push(nm);
+        }
+      }
+    } catch (e) { console.error('อ่านรายชื่อจากชีตก่อนหน้าไม่สำเร็จ', e); }
+  }
+
+  const occurrences = buildWeekOccurrences(monday);
+  const FIRST_BOSS_COL0 = 8; // 0-indexed: A..H = 135(1),135(2),Nevaeh,Lucas,No.,Member,Score,CP
+  const lastBossCol0 = FIRST_BOSS_COL0 + occurrences.length - 1;
+  const colOf = (bossKey) => occurrences.map((o, i) => ({ o, i })).filter(x => x.o.boss === bossKey).map(x => FIRST_BOSS_COL0 + x.i);
+  const mottiIcarCols0 = [...colOf('motti'), ...colOf('icarutier')];
+  const nevaehCols0 = colOf('nevaeh');
+  const lucusCols0 = colOf('lucus');
+
+  // 1) สร้างแท็บใหม่
+  const addRes = await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: { requests: [{ addSheet: { properties: { title: name } } }] },
+  });
+  const newSheetId = addRes.data.replies[0].addSheet.properties.sheetId;
+
+  // 2) เตรียมค่าทุกแถว (หัวตาราง + ข้อมูลสมาชิก)
+  const headerFixed = ['135 (1)', '135 (2)', 'Nevaeh', 'Lucas', 'No.', 'Member', 'Score', 'CP'];
+  const bossHeaders = occurrences.map(o => `Lv.${getBossLevel(o.boss)} ${o.boss.charAt(0).toUpperCase() + o.boss.slice(1)}`);
+  const bossDates = occurrences.map(o => fmtSheetDT(o.dt));
+
+  const values = [];
+  values.push([`HEAVEN — Weekly Attendance (${name.replace('Week_', '')})`]);
+  values.push([]);
+  values.push([...headerFixed, ...bossHeaders]);
+  values.push(['', '', '', '', '', '', '', '', ...bossDates]);
+  memberNames.forEach((nm, i) => {
+    const r = 5 + i; // เลขแถวจริง (1-indexed)
+    const scoreFormula = `=SUM(${colToLetter(FIRST_BOSS_COL0)}${r}:${colToLetter(lastBossCol0)}${r})`;
+    const f135_1 = mottiIcarCols0.length ? `=COUNT(${mottiIcarCols0.map(c => colToLetter(c) + r).join(',')})>=1` : 'FALSE';
+    const f135_2 = mottiIcarCols0.length ? `=COUNT(${mottiIcarCols0.map(c => colToLetter(c) + r).join(',')})>=2` : 'FALSE';
+    const fNevaeh = nevaehCols0.length ? `=COUNT(${colToLetter(nevaehCols0[0])}${r})>=1` : 'FALSE';
+    const fLucas = lucusCols0.length ? `=COUNT(${colToLetter(lucusCols0[0])}${r})>=1` : 'FALSE';
+    values.push([f135_1, f135_2, fNevaeh, fLucas, i + 1, nm, scoreFormula, '']);
+  });
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${name}!A1`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values },
+  });
+
+  // 3) จัดสีหัวตาราง (ทอง = ทั่วไป, แดง = บอสบังคับ)
+  const goldBg = { red: 0.914, green: 0.769, blue: 0.416 };
+  const redBg = { red: 0.698, green: 0.227, blue: 0.290 };
+  const fmtRequests = [
+    { repeatCell: {
+        range: { sheetId: newSheetId, startRowIndex: 2, endRowIndex: 4, startColumnIndex: 0, endColumnIndex: FIRST_BOSS_COL0 },
+        cell: { userEnteredFormat: { backgroundColor: goldBg } }, fields: 'userEnteredFormat.backgroundColor',
+    } },
+  ];
+  occurrences.forEach((o, i) => {
+    const col = FIRST_BOSS_COL0 + i;
+    const mandatory = MANDATORY_BOSSES.has(o.boss);
+    fmtRequests.push({ repeatCell: {
+      range: { sheetId: newSheetId, startRowIndex: 2, endRowIndex: 4, startColumnIndex: col, endColumnIndex: col + 1 },
+      cell: { userEnteredFormat: { backgroundColor: mandatory ? redBg : goldBg } }, fields: 'userEnteredFormat.backgroundColor',
+    } });
+  });
+  await sheets.spreadsheets.batchUpdate({ spreadsheetId: SPREADSHEET_ID, requestBody: { requests: fmtRequests } });
+
+  console.log(`📅 สร้างชีตสัปดาห์ใหม่ "${name}" แล้ว (คัดลอกสมาชิก ${memberNames.length} คนจาก "${sourceName || '-'}", บอสตารางตายตัว ${occurrences.length} คอลัมน์)`);
+}
+
+let activeSheetCache = null; // { name }
+// เรียกก่อนทุกครั้งที่จะอ่าน/เขียนชีต — คำนวณชื่อชีตสัปดาห์ปัจจุบัน สร้างใหม่อัตโนมัติถ้ายังไม่มี
+async function ensureActiveSheet() {
+  const now = thaiNowAnchored();
+  const { monday, sunday } = getWeekBounds(now);
+  const name = weekSheetName(monday, sunday);
+
+  if (activeSheetCache && activeSheetCache.name === name) {
+    SHEET_NAME = name;
+    return name;
+  }
+
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+  const exists = meta.data.sheets.some(s => s.properties.title === name);
+  if (!exists) {
+    await createWeekSheet(name, monday, sunday, meta);
+  }
+  cachedSheetId = null; // เปลี่ยนชีตแล้ว ต้องหา gid ใหม่รอบหน้า
+  activeSheetCache = { name };
+  SHEET_NAME = name;
+  return name;
+}
+
 function minutesDiff(dtTextA, dtTextB) {
   const parse = (s) => {
     const m = String(s).trim().match(/^(\d{4})-(\d{2})-(\d{2}) (\d{1,2}):(\d{2})/);
@@ -231,6 +406,7 @@ function minutesDiff(dtTextA, dtTextB) {
 async function handleScheduleImage(message, image) {
   await message.react('⏳');
   try {
+    await ensureActiveSheet();
     const imgRes = await fetch(image.url);
     const imgBuffer = await imgRes.arrayBuffer();
     const base64 = Buffer.from(imgBuffer).toString('base64');
@@ -242,6 +418,7 @@ async function handleScheduleImage(message, image) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 1500,
+        temperature: 0,
         messages: [{
           role: 'user',
           content: [
@@ -372,17 +549,368 @@ async function handleScheduleImage(message, image) {
   }
 }
 
+// หาคอลัมน์ "CP" ในชีต ถ้ายังไม่มีให้แทรกใหม่ต่อจากคอลัมน์ Score
+async function getOrInsertCPColumn() {
+  await ensureActiveSheet();
+  const hdrRes = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:ZZ10` });
+  const hdrRows = hdrRes.data.values || [];
+  let labelRowIdx = -1;
+  for (let r = 0; r < Math.min(hdrRows.length, 10); r++) {
+    if ((hdrRows[r] || []).some(c => (c || '').trim().toLowerCase() === 'member')) { labelRowIdx = r; break; }
+  }
+  if (labelRowIdx === -1) throw new Error('หาคอลัมน์ Member ในชีตไม่เจอ');
+  const row = hdrRows[labelRowIdx] || [];
+  let cpCol = row.findIndex(c => (c || '').trim().toLowerCase() === 'cp');
+  if (cpCol !== -1) return { cpCol, labelRowIdx };
+
+  const scoreCol = row.findIndex(c => (c || '').trim().toLowerCase() === 'score');
+  const insertAt = scoreCol !== -1 ? scoreCol + 1 : row.length;
+  const gid = await getSheetGid();
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: { requests: [{ insertDimension: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: insertAt, endIndex: insertAt + 1 }, inheritFromBefore: false } }] },
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_NAME}!${colToLetter(insertAt)}${labelRowIdx + 1}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [['CP']] },
+  });
+  return { cpCol: insertAt, labelRowIdx };
+}
+
+// ห้องลง CP: พิมพ์ "ชื่อ ค่าCP" + แนบภาพสกรีน CP → AI อ่านค่าจากภาพมาเทียบ ตรงกันถึงจะบันทึก
+// ห้อง CP ปกติเปิดเฉพาะวันอาทิตย์ 20:00-21:00 น. (เวลาไทย) — ตั้ง CP_WINDOW_ENFORCED = false ไว้ชั่วคราวตอนทดสอบ
+const CP_WINDOW_ENFORCED = false; // เปลี่ยนกลับเป็น true เมื่อเลิกทดสอบ เพื่อบังคับช่วงเวลาอีกครั้ง
+function isCPWindowOpen() {
+  if (!CP_WINDOW_ENFORCED) return true;
+  const now = thaiNowAnchored();
+  const day = now.getUTCDay(); // 0 = อาทิตย์
+  const hour = now.getUTCHours();
+  return day === 0 && hour >= 20 && hour < 21;
+}
+
+async function handleCPSubmission(message, image) {
+  await message.react('⏳');
+  try {
+    await ensureActiveSheet();
+    const content = message.content.trim();
+    const numMatch = content.match(/([\d][\d,]{2,})\s*$/);
+    if (!numMatch) {
+      await message.reply('⚠️ พิมพ์ชื่อ + ค่า CP ในข้อความเดียวกับที่แนบรูป เช่น "PML 145230"');
+      await message.reactions.removeAll().catch(() => {});
+      return;
+    }
+    const typedCP = parseInt(numMatch[1].replace(/,/g, ''), 10);
+    const nameText = content.slice(0, numMatch.index).trim();
+    if (!nameText) {
+      await message.reply('⚠️ พิมพ์ชื่อสมาชิกนำหน้าค่า CP ด้วย เช่น "PML 145230"');
+      await message.reactions.removeAll().catch(() => {});
+      return;
+    }
+
+    const imgRes = await fetch(image.url);
+    const imgBuffer = await imgRes.arrayBuffer();
+    const base64 = Buffer.from(imgBuffer).toString('base64');
+    const mediaType = sniffImageType(imgBuffer) || image.contentType || 'image/png';
+    const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 200,
+        temperature: 0,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+            { type: 'text', text: 'นี่คือภาพหน้าจอเกม ต้องการอ่านค่า "พลังต่อสู้" (Combat Power / CP) ของตัวละคร ค่านี้จะอยู่มุมล่างซ้ายของหน้าจอ เป็นตัวเลขสีขาวขนาดใหญ่ที่อยู่ถัดจากคำว่า "พลังต่อสู้" โดยตรง (ตัวอย่าง: ถ้าเห็นข้อความ "พลังต่อสู้ 174,374" ค่า CP คือ 174374) ห้ามสับสนกับตัวเลขอื่นที่อยู่ใกล้กันในบริเวณเดียวกัน เช่น: เลขเลเวล (ตัวเลขเล็กๆ ก่อนหน้าชื่ออาชีพ เช่น "95"), เลข "อันดับ" (ตามหลังคำว่าอันดับ), เปอร์เซ็นต์ Exp, หรือจำนวนทอง/เพชรที่มุมบนของจอ — สนใจเฉพาะตัวเลขที่ติดกับคำว่า "พลังต่อสู้" เท่านั้น ตอบเป็นตัวเลขล้วนๆ เท่านั้น ไม่มีคอมม่า ไม่มีข้อความอื่น เช่น 174374 ถ้าหาคำว่า "พลังต่อสู้" ในภาพไม่เจอเลยให้ตอบ 0' },
+          ],
+        }],
+      }),
+    });
+    const aiData = await aiRes.json();
+    if (aiData.error) {
+      await message.reply(`❌ เรียก AI ไม่สำเร็จ: ${aiData.error.message || JSON.stringify(aiData.error)}`);
+      await message.reactions.removeAll().catch(() => {});
+      return;
+    }
+    const textBlock = (aiData.content || []).find(c => c.type === 'text');
+    const readCP = textBlock ? parseInt((textBlock.text.match(/\d+/) || ['0'])[0], 10) : 0;
+
+    if (!readCP || readCP !== typedCP) {
+      await message.reply(`❌ ค่า CP ไม่ตรงกับภาพ — พิมพ์มา: ${typedCP.toLocaleString()} / AI อ่านได้จากภาพ: ${readCP ? readCP.toLocaleString() : 'อ่านไม่ได้'}\nกรุณาตรวจสอบแล้วลองใหม่`);
+      await message.reactions.removeAll().catch(() => {});
+      return;
+    }
+
+    const { cpCol, labelRowIdx } = await getOrInsertCPColumn();
+    const dataRes = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:ZZ2000` });
+    const rows = dataRes.data.values || [];
+    const memberCol = (rows[labelRowIdx] || []).findIndex(c => (c || '').trim().toLowerCase() === 'member');
+
+    let rowIdx = -1;
+    for (let r = labelRowIdx + 2; r < rows.length; r++) {
+      if ((rows[r][memberCol] || '').trim().toLowerCase() === nameText.toLowerCase()) { rowIdx = r; break; }
+    }
+    if (rowIdx === -1) {
+      for (let r = labelRowIdx + 2; r < rows.length; r++) {
+        const name = (rows[r][memberCol] || '').trim().toLowerCase();
+        if (name && (name.includes(nameText.toLowerCase()) || nameText.toLowerCase().includes(name))) { rowIdx = r; break; }
+      }
+    }
+    if (rowIdx === -1) {
+      await message.reply(`❌ หาชื่อ "${nameText}" ในชีตไม่เจอ`);
+      await message.reactions.removeAll().catch(() => {});
+      return;
+    }
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!${colToLetter(cpCol)}${rowIdx + 1}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [[typedCP]] },
+    });
+
+    await message.reactions.removeAll().catch(() => {});
+    await message.react('✅');
+    await message.reply(`✅ บันทึก CP ของ ${nameText} = ${typedCP.toLocaleString()} แล้ว (ตรงกับภาพ ✓)`);
+  } catch (err) {
+    console.error(err);
+    await message.reactions.removeAll().catch(() => {});
+    try { await message.reply('❌ เกิดข้อผิดพลาด: ' + err.message); } catch (e) {}
+  }
+}
+
+// ---------------- แจ้งเตือนก่อนบอสเกิด (บอทเช็คพื้นหลังเอง ไม่ต้องมีคนพิมพ์) ----------------
+function parseSheetDT(text) {
+  const m = String(text).trim().match(/^(\d{4})-(\d{2})-(\d{2}) (\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])));
+}
+function thaiNowAnchored() {
+  const now = new Date();
+  const shifted = new Date(now.getTime() + (7 * 60 - now.getTimezoneOffset()) * 60000);
+  return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate(), shifted.getUTCHours(), shifted.getUTCMinutes(), shifted.getUTCSeconds()));
+}
+const alertedKeys = new Set();
+
+async function checkUpcomingSpawns() {
+  try {
+    await ensureActiveSheet(); // เช็คทุกนาที = จุดที่ทำให้ขึ้นสัปดาห์ใหม่ได้แน่นอนแม้ไม่มีใครพิมพ์อะไรเลย
+  } catch (e) { console.error('ensureActiveSheet error', e); }
+  if (!ALERT_CHANNEL_ID) return;
+  try {
+    const hdrRes = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:ZZ10` });
+    const hdrRows = hdrRes.data.values || [];
+    let labelRowIdx = -1, memberCol = -1;
+    for (let r = 0; r < Math.min(hdrRows.length, 10); r++) {
+      const idx = (hdrRows[r] || []).findIndex(c => (c || '').trim().toLowerCase() === 'member');
+      if (idx !== -1) { labelRowIdx = r; memberCol = idx; break; }
+    }
+    if (labelRowIdx === -1) return;
+    const bossRow = hdrRows[labelRowIdx] || [];
+    const dateRow = hdrRows[labelRowIdx + 1] || [];
+    const now = thaiNowAnchored();
+
+    for (let c = memberCol + 1; c < bossRow.length; c++) {
+      const bossName = bossRow[c];
+      const dateText = dateRow[c];
+      if (!bossName || !dateText) continue;
+      if (bossName.toUpperCase().startsWith('GD')) continue;
+      const dt = parseSheetDT(dateText);
+      if (!dt) continue;
+      const diffMin = (dt.getTime() - now.getTime()) / 60000;
+      const key = `${bossName}|${dateText}`;
+      if (diffMin > 0 && diffMin <= ALERT_MINUTES && !alertedKeys.has(key)) {
+        alertedKeys.add(key);
+        try {
+          const channel = await client.channels.fetch(ALERT_CHANNEL_ID);
+          await channel.send(`⏰ **${bossName}** จะเกิดในอีกประมาณ ${Math.ceil(diffMin)} นาที! (${dateText.split(' ')[1] || ''})`);
+        } catch (e) { console.error('ส่งแจ้งเตือนไม่สำเร็จ', e); }
+      }
+    }
+  } catch (err) {
+    console.error('checkUpcomingSpawns error', err);
+  }
+}
+
+// คูลดาวน์ (ชั่วโมง) ของบอสแบบ "รอบเกิด" เท่านั้น — บอสตารางตายตัวไม่ต้องมีในนี้ (ไม่ใช้ !kill)
+const COOLDOWN_HOURS = {
+  venatus: 10, viorent: 10, ego: 21, livera: 24, araneo: 24, undomiel: 24,
+  'general aquleus': 29, 'general aqueles': 29, amentis: 29, 'baron braudmore': 32,
+  wannitas: 48, metus: 48, duplican: 48, gareth: 32, shuliar: 35, titore: 37,
+  larba: 35, catena: 35, secreta: 62, ordo: 62, asta: 62, supore: 62, 'lady dalia': 18,
+};
+
+// แยกชื่อบอส/เวลา/yesterday-today ออกจากข้อความ !kill (ตามรูปแบบของ RaidScout)
+function parseKillArgs(text) {
+  const parts = text.trim().split(/\s+/).filter(Boolean);
+  let explicitDay = null;
+  if (parts.length && ['yesterday', 'today'].includes(parts[parts.length - 1].toLowerCase())) {
+    explicitDay = parts.pop().toLowerCase();
+  }
+  let timeStr = null;
+  if (parts.length && /^\d{1,2}:\d{2}$/.test(parts[parts.length - 1])) {
+    timeStr = parts.pop();
+  }
+  return { bossText: parts.join(' '), timeStr, explicitDay };
+}
+
+function fmtSheetDT(d) {
+  const p2 = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;
+}
+
+// แทรกคอลัมน์ใหม่ หรืออัปเดตเวลาคอลัมน์เดิม (ถ้าห่างกันไม่เกิน 5 นาที ถือว่าเป็นรอบเดียวกัน) — ใช้ร่วมกับ !kill
+async function insertOrUpdateBossColumn(bossQuery, dt) {
+  await ensureActiveSheet();
+  const hdrRes = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:ZZ10` });
+  const hdrRows = hdrRes.data.values || [];
+  let labelRowIdx = -1, memberCol = -1;
+  for (let r = 0; r < Math.min(hdrRows.length, 10); r++) {
+    const idx = (hdrRows[r] || []).findIndex(c => (c || '').trim().toLowerCase() === 'member');
+    if (idx !== -1) { labelRowIdx = r; memberCol = idx; break; }
+  }
+  if (labelRowIdx === -1) throw new Error('หาคอลัมน์ Member ในชีตไม่เจอ');
+  const bossRow = hdrRows[labelRowIdx] || [];
+  const dateRow = hdrRows[labelRowIdx + 1] || [];
+
+  let gdCol = bossRow.length;
+  for (let c = memberCol + 1; c < bossRow.length; c++) {
+    if ((bossRow[c] || '').toUpperCase().startsWith('GD')) { gdCol = c; break; }
+  }
+
+  let closestCol = -1, closestDiff = Infinity, insertAt = gdCol;
+  for (let c = memberCol + 1; c < gdCol; c++) {
+    const cellBoss = (bossRow[c] || '').toLowerCase();
+    const cellDate = dateRow[c] || '';
+    if (cellBoss.includes(bossQuery)) {
+      const diff = minutesDiff(cellDate, dt);
+      if (diff < closestDiff) { closestDiff = diff; closestCol = c; }
+    }
+    if (insertAt === gdCol && cellDate > dt) insertAt = c;
+  }
+
+  if (closestCol !== -1 && closestDiff <= 5) {
+    if (closestDiff > 0) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `${SHEET_NAME}!${colToLetter(closestCol)}${labelRowIdx + 2}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [[dt]] },
+      });
+      return { action: 'updated', dt };
+    }
+    return { action: 'unchanged', dt };
+  }
+
+  const level = getBossLevel(bossQuery);
+  const mandatory = MANDATORY_BOSSES.has(bossQuery) || [...MANDATORY_BOSSES].some(m => bossQuery.includes(m));
+  const headerText = `Lv.${level} ${bossQuery.charAt(0).toUpperCase() + bossQuery.slice(1)}`;
+  const bg = mandatory ? { red: 0.698, green: 0.227, blue: 0.290 } : { red: 0.914, green: 0.769, blue: 0.416 };
+  const gid = await getSheetGid();
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: {
+      requests: [
+        { insertDimension: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: insertAt, endIndex: insertAt + 1 }, inheritFromBefore: false } },
+        { repeatCell: {
+            range: { sheetId: gid, startRowIndex: labelRowIdx, endRowIndex: labelRowIdx + 2, startColumnIndex: insertAt, endColumnIndex: insertAt + 1 },
+            cell: { userEnteredFormat: { backgroundColor: bg } },
+            fields: 'userEnteredFormat.backgroundColor',
+        } },
+      ],
+    },
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_NAME}!${colToLetter(insertAt)}${labelRowIdx + 1}:${colToLetter(insertAt)}${labelRowIdx + 2}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[headerText], [dt]] },
+  });
+  return { action: 'inserted', dt };
+}
+
+// คำสั่ง !kill <boss> [HH:MM] [yesterday|today] — คำนวณเวลาเกิดรอบถัดไปจากคูลดาวน์ แล้วแทรก/อัปเดตคอลัมน์ให้เอง
+async function handleKillCommand(message) {
+  const raw = message.content.replace(/^!kill\s*/i, '');
+  const { bossText, timeStr, explicitDay } = parseKillArgs(raw);
+  if (!bossText) {
+    await message.reply('รูปแบบ: `!kill <ชื่อบอส> [HH:MM] [yesterday|today]`\nตัวอย่าง: `!kill Venatus` หรือ `!kill Venatus 20:30 yesterday`');
+    return;
+  }
+  const bossQuery = resolveBossName(bossText);
+  if (!bossQuery) {
+    await message.reply(`❌ ไม่รู้จักชื่อบอส "${bossText}"`);
+    return;
+  }
+  const cooldown = COOLDOWN_HOURS[bossQuery];
+  if (!cooldown) {
+    await message.reply(`❌ "${bossQuery}" ไม่ใช่บอสแบบรอบเกิด (คูลดาวน์) — คำสั่งนี้ใช้ได้เฉพาะบอสที่มีรอบเกิดเป็นชั่วโมงเท่านั้น บอสตารางตายตัวไม่ต้องใช้คำสั่งนี้`);
+    return;
+  }
+
+  const now = thaiNowAnchored();
+  let killDate = now;
+  if (timeStr) {
+    const [h, m] = timeStr.split(':').map(Number);
+    killDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, m));
+    if (explicitDay === 'yesterday') {
+      killDate.setUTCDate(killDate.getUTCDate() - 1);
+    } else if (!explicitDay && killDate.getTime() > now.getTime()) {
+      killDate.setUTCDate(killDate.getUTCDate() - 1); // เดาอัตโนมัติ: เวลาตายเป็นอนาคตไม่ได้ → ต้องเป็นเมื่อวาน
+    }
+  }
+
+  const nextSpawn = new Date(killDate.getTime() + cooldown * 3600000);
+  const dt = fmtSheetDT(nextSpawn);
+
+  try {
+    const result = await insertOrUpdateBossColumn(bossQuery, dt);
+    const label = result.action === 'inserted' ? 'แทรกคอลัมน์ใหม่' : result.action === 'updated' ? 'ปรับเวลาคอลัมน์เดิม' : 'ไม่มีอะไรเปลี่ยน (เวลาตรงเดิมอยู่แล้ว)';
+    await message.reply(`✅ บันทึกเวลาตาย **${bossQuery}** (${label}) — เกิดใหม่ประมาณ ${dt} (คำนวณจากคูลดาวน์ ${cooldown} ชม.)`);
+  } catch (err) {
+    console.error(err);
+    await message.reply('❌ เกิดข้อผิดพลาด: ' + err.message);
+  }
+}
+
 /* ---------------- Discord client ---------------- */
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
   partials: [Partials.Channel],
 });
 
-client.once('ready', () => console.log(`✅ บอทออนไลน์แล้ว: ${client.user.tag}`));
+client.once('ready', () => {
+  console.log(`✅ บอทออนไลน์แล้ว: ${client.user.tag}`);
+  setInterval(checkUpcomingSpawns, 60 * 1000);
+  checkUpcomingSpawns();
+});
 
 client.on('messageCreate', async (message) => {
   try {
     if (message.author.bot) return;
+
+    if (COMMANDS_CHANNEL_ID && message.channel.id === COMMANDS_CHANNEL_ID && /^!kill\b/i.test(message.content.trim())) {
+      await handleKillCommand(message);
+      return;
+    }
+
+    if (CP_CHANNEL_ID && message.channel.id === CP_CHANNEL_ID) {
+      if (!isCPWindowOpen()) {
+        await message.reply('⏰ ห้องนี้เปิดให้ลง CP เฉพาะ **วันอาทิตย์ เวลา 20:00–21:00 น.** เท่านั้น กรุณากลับมาใหม่ในช่วงเวลาดังกล่าว');
+        return;
+      }
+      const image = message.attachments.find(a => (a.contentType || '').startsWith('image/'));
+      if (!image) {
+        await message.reply('⚠️ พิมพ์ชื่อ + ค่า CP พร้อมแนบรูปสกรีน CP ในข้อความเดียวกัน เช่น "PML 145230"');
+        return;
+      }
+      await handleCPSubmission(message, image);
+      return;
+    }
+
     if (message.channel.id !== CHECKIN_CHANNEL_ID) return;
     const image = message.attachments.find(a => (a.contentType || '').startsWith('image/'));
     if (!image) return;
@@ -408,7 +936,7 @@ client.on('messageCreate', async (message) => {
     }
 
     await message.react('⏳');
-
+    await ensureActiveSheet();
 
     // 1) อ่านภาพด้วย AI (แยกชื่อปกติ = เข้าร่วม / ชื่อสีเทาจาง = ขาด)
     const imgRes = await fetch(image.url);
@@ -421,6 +949,7 @@ client.on('messageCreate', async (message) => {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 600,
+        temperature: 0,
         messages: [{
           role: 'user',
           content: [
