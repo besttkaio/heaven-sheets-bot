@@ -592,8 +592,8 @@ async function getOrInsertCPColumn() {
 }
 
 // ห้องลง CP: พิมพ์ "ชื่อ ค่าCP" + แนบภาพสกรีน CP → AI อ่านค่าจากภาพมาเทียบ ตรงกันถึงจะบันทึก
-// ห้อง CP ปกติเปิดเฉพาะวันอาทิตย์ 20:00-21:00 น. (เวลาไทย) — ตั้ง CP_WINDOW_ENFORCED = true ไว้ชั่วคราวตอนทดสอบ
-const CP_WINDOW_ENFORCED = false; // เปลี่ยนกลับเป็น true เมื่อเลิกทดสอบ เพื่อบังคับช่วงเวลาอีกครั้ง
+// ห้อง CP ปกติเปิดเฉพาะวันอาทิตย์ 20:00-21:00 น. (เวลาไทย) — ตั้ง CP_WINDOW_ENFORCED = false ไว้ชั่วคราวตอนทดสอบ
+const CP_WINDOW_ENFORCED = true; // เปลี่ยนกลับเป็น true เมื่อเลิกทดสอบ เพื่อบังคับช่วงเวลาอีกครั้ง
 function isCPWindowOpen() {
   if (!CP_WINDOW_ENFORCED) return true;
   const now = thaiNowAnchored();
