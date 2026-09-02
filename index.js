@@ -603,97 +603,231 @@ function isCPWindowOpen() {
 }
 
 async function handleCPSubmission(message, image) {
+
   await message.react('⏳');
+
   try {
+
     await ensureActiveSheet();
+
     const content = message.content.trim();
+
     const numMatch = content.match(/([\d][\d,]{2,})\s*$/);
+
     if (!numMatch) {
+
       await message.reply('⚠️ พิมพ์ชื่อ + ค่า CP ในข้อความเดียวกับที่แนบรูป เช่น "PML 145230"');
+
       await message.reactions.removeAll().catch(() => {});
+
       return;
+
     }
+
     const typedCP = parseInt(numMatch[1].replace(/,/g, ''), 10);
+
     const nameText = content.slice(0, numMatch.index).trim();
+
     if (!nameText) {
+
       await message.reply('⚠️ พิมพ์ชื่อสมาชิกนำหน้าค่า CP ด้วย เช่น "PML 145230"');
+
       await message.reactions.removeAll().catch(() => {});
+
       return;
+
     }
+
 
     const imgRes = await fetch(image.url);
+
     const imgBuffer = await imgRes.arrayBuffer();
+
     const base64 = Buffer.from(imgBuffer).toString('base64');
+
     const mediaType = sniffImageType(imgBuffer) || image.contentType || 'image/png';
+
     const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+
       method: 'POST',
+
       headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+
       body: JSON.stringify({
+
         model: 'claude-sonnet-4-6',
-        max_tokens: 200,
+
+        max_tokens: 300,
+
         temperature: 0,
+
         messages: [{
+
           role: 'user',
+
           content: [
+
             { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-            { type: 'text', text: 'นี่คือภาพหน้าจอเกม ต้องการอ่านค่า "พลังต่อสู้" หรือ "Combat Power" (CP) ของตัวละคร ขึ้นอยู่กับว่าไคลเอนต์เกมตั้งเป็นภาษาไทยหรืออังกฤษ — ให้มองหาป้ายกำกับใดป้ายหนึ่งจาก 2 แบบนี้: "พลังต่อสู้" (ภาษาไทย) หรือ "Combat Power" (ภาษาอังกฤษ) แล้วอ่านตัวเลขที่อยู่ถัดจากป้ายนั้นโดยตรง มักอยู่บริเวณมุมล่างซ้ายของหน้าจอ (ตัวอย่างไทย: "พลังต่อสู้ 174,374" → CP คือ 174374 / ตัวอย่างอังกฤษ: "Combat Power 91,870" → CP คือ 91870) ห้ามสับสนกับตัวเลขอื่นที่อยู่ใกล้กัน เช่น: เลขเลเวล (ตัวเลขเล็กๆ ก่อนหน้าชื่ออาชีพ), เลข "อันดับ"/"#" (ตามหลังสัญลักษณ์ # หรือคำว่าอันดับ), เปอร์เซ็นต์ Exp, หรือจำนวนทอง/เพชร ($ หรือไอคอนเหรียญ) — สนใจเฉพาะตัวเลขที่ติดกับคำว่า "พลังต่อสู้" หรือ "Combat Power" เท่านั้น ตอบเป็นตัวเลขล้วนๆ เท่านั้น ไม่มีคอมม่า ไม่มีข้อความอื่น เช่น 174374 ถ้าหาป้ายกำกับทั้งสองแบบในภาพไม่เจอเลยให้ตอบ 0' },
+
+            { type: 'text', text: 'นี่คือภาพหน้าจอเกม ต้องการอ่าน 2 อย่างจากภาพ: (1) "ชื่อตัวละคร" ที่แสดงอยู่บนหน้าจอ (มักอยู่ใกล้กับค่าพลังต่อสู้ หรือมุมบนของหน้าจอ) และ (2) ค่า "พลังต่อสู้" หรือ "Combat Power" (CP) ของตัวละคร ขึ้นอยู่กับว่าไคลเอนต์เกมตั้งเป็นภาษาไทยหรืออังกฤษ — ให้มองหาป้ายกำกับใดป้ายหนึ่งจาก 2 แบบนี้: "พลังต่อสู้" (ภาษาไทย) หรือ "Combat Power" (ภาษาอังกฤษ) แล้วอ่านตัวเลขที่อยู่ถัดจากป้ายนั้นโดยตรง มักอยู่บริเวณมุมล่างซ้ายของหน้าจอ (ตัวอย่างไทย: "พลังต่อสู้ 174,374" → CP คือ 174374 / ตัวอย่างอังกฤษ: "Combat Power 91,870" → CP คือ 91870) ห้ามสับสนกับตัวเลขอื่นที่อยู่ใกล้กัน เช่น: เลขเลเวล, เลข "อันดับ"/"#", เปอร์เซ็นต์ Exp, หรือจำนวนทอง/เพชร — สนใจเฉพาะตัวเลขที่ติดกับคำว่า "พลังต่อสู้" หรือ "Combat Power" เท่านั้น ถ้าหาป้ายกำกับ CP ไม่เจอเลยให้ใส่ "cp":"0" ถ้าหาชื่อตัวละครไม่เจอให้ใส่ "name":"" ตอบเป็น JSON เท่านั้น ไม่มีคำอธิบายอื่น ไม่มี markdown รูปแบบ {"name":"PML","cp":"174374"}' },
+
           ],
+
         }],
+
       }),
+
     });
+
     const aiData = await aiRes.json();
+
     if (aiData.error) {
+
       await message.reply(`❌ เรียก AI ไม่สำเร็จ: ${aiData.error.message || JSON.stringify(aiData.error)}`);
+
       await message.reactions.removeAll().catch(() => {});
+
       return;
+
     }
+
     const textBlock = (aiData.content || []).find(c => c.type === 'text');
-    const readCP = textBlock ? parseInt((textBlock.text.match(/\d+/) || ['0'])[0], 10) : 0;
+
+    let readName = '';
+
+    let readCP = 0;
+
+    if (textBlock) {
+
+      try {
+
+        const parsed = JSON.parse(textBlock.text.replace(/```json|```/g, '').trim());
+
+        readName = (parsed.name || '').trim();
+
+        readCP = parseInt(String(parsed.cp || '0').replace(/[^\d]/g, ''), 10) || 0;
+
+      } catch (e) {
+
+        // เผื่อ AI ไม่ตอบเป็น JSON ตามที่สั่ง — fallback ดึงตัวเลขล้วนจากข้อความแทน
+
+        readCP = parseInt((textBlock.text.match(/\d+/) || ['0'])[0], 10) || 0;
+
+      }
+
+    }
+
 
     if (!readCP || readCP !== typedCP) {
+
       await message.reply(`❌ ค่า CP ไม่ตรงกับภาพ — พิมพ์มา: ${typedCP.toLocaleString()} / AI อ่านได้จากภาพ: ${readCP ? readCP.toLocaleString() : 'อ่านไม่ได้'}\nกรุณาตรวจสอบแล้วลองใหม่`);
+
       await message.reactions.removeAll().catch(() => {});
+
       return;
+
     }
+
+
+    // ตรวจสอบชื่อตัวละครในภาพเทียบกับชื่อที่พิมพ์มา (ถ้า AI อ่านชื่อได้จากภาพ)
+
+    let nameWarning = '';
+
+    if (readName) {
+
+      const a = readName.trim().toLowerCase();
+
+      const b = nameText.trim().toLowerCase();
+
+      const isMatch = a === b || a.includes(b) || b.includes(a) || levenshtein(a, b) <= (b.length <= 4 ? 1 : 2);
+
+      if (!isMatch) {
+
+        await message.reply(`❌ ชื่อตัวละครในภาพ ("${readName}") ไม่ตรงกับชื่อที่พิมพ์มา ("${nameText}")\nกรุณาตรวจสอบแล้วลองใหม่`);
+
+        await message.reactions.removeAll().catch(() => {});
+
+        return;
+
+      }
+
+    } else {
+
+      nameWarning = '\n⚠️ ไม่พบชื่อตัวละครในภาพ (ตรวจสอบเฉพาะค่า CP เท่านั้น)';
+
+    }
+
 
     const { cpCol, labelRowIdx } = await getOrInsertCPColumn();
+
     const dataRes = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A1:ZZ2000` });
+
     const rows = dataRes.data.values || [];
+
     const memberCol = (rows[labelRowIdx] || []).findIndex(c => (c || '').trim().toLowerCase() === 'member');
 
+
     let rowIdx = -1;
+
     for (let r = labelRowIdx + 2; r < rows.length; r++) {
+
       if ((rows[r][memberCol] || '').trim().toLowerCase() === nameText.toLowerCase()) { rowIdx = r; break; }
+
     }
+
     if (rowIdx === -1) {
+
       for (let r = labelRowIdx + 2; r < rows.length; r++) {
+
         const name = (rows[r][memberCol] || '').trim().toLowerCase();
+
         if (name && (name.includes(nameText.toLowerCase()) || nameText.toLowerCase().includes(name))) { rowIdx = r; break; }
+
       }
+
     }
+
     if (rowIdx === -1) {
+
       await message.reply(`❌ หาชื่อ "${nameText}" ในชีตไม่เจอ`);
+
       await message.reactions.removeAll().catch(() => {});
+
       return;
+
     }
+
 
     await sheets.spreadsheets.values.update({
+
       spreadsheetId: SPREADSHEET_ID,
+
       range: `${SHEET_NAME}!${colToLetter(cpCol)}${rowIdx + 1}`,
+
       valueInputOption: 'USER_ENTERED',
+
       requestBody: { values: [[typedCP]] },
+
     });
 
-    await message.reactions.removeAll().catch(() => {});
-    await message.react('✅');
-    await message.reply(`✅ บันทึก CP ของ ${nameText} = ${typedCP.toLocaleString()} แล้ว (ตรงกับภาพ ✓)`);
-  } catch (err) {
-    console.error(err);
-    await message.reactions.removeAll().catch(() => {});
-    try { await message.reply('❌ เกิดข้อผิดพลาด: ' + err.message); } catch (e) {}
-  }
-}
 
+    await message.reactions.removeAll().catch(() => {});
+
+    await message.react('✅');
+
+    await message.reply(`✅ บันทึก CP ของ ${nameText} = ${typedCP.toLocaleString()} แล้ว (ตรงกับภาพ ✓)${nameWarning}`);
+
+  } catch (err) {
+
+    console.error(err);
+
+    await message.reactions.removeAll().catch(() => {});
+
+    try { await message.reply('❌ เกิดข้อผิดพลาด: ' + err.message); } catch (e) {}
+
+  }
+
+}
 // ---------------- แจ้งเตือนก่อนบอสเกิด (บอทเช็คพื้นหลังเอง ไม่ต้องมีคนพิมพ์) ----------------
 function parseSheetDT(text) {
   const m = String(text).trim().match(/^(\d{4})-(\d{2})-(\d{2}) (\d{1,2}):(\d{2})/);
