@@ -14,6 +14,11 @@ SHEET_NAME              = ชื่อแท็บชีตที่จะเข
 CP_CHANNEL_ID           = (ไม่บังคับ) Channel ID ห้องลง CP พร้อมภาพยืนยัน
 ALERT_CHANNEL_ID        = (ไม่บังคับ) Channel ID ห้องที่บอทจะแจ้งเตือนก่อนบอสเกิด
 COMMANDS_CHANNEL_ID     = (ไม่บังคับ) Channel ID ห้องสำหรับพิมพ์คำสั่ง เช่น !kill
+BOSS_TRACKER_SPREADSHEET_ID = (ไม่บังคับ) ID ของ Google Sheet "Boss Spawn Tracker" (คนละไฟล์กับ SPREADSHEET_ID ด้านบน)
+                          ถ้าตั้งค่านี้ไว้ บอทจะอัปเดตคอลัมน์ "Last Kill Date" / "Last Kill Time (UTC+7)"
+                          ในแท็บ "Boss Spawn" ของไฟล์นั้นให้อัตโนมัติทุกครั้งที่มีคนพิมพ์ !kill
+                          (เฉพาะบอสแบบคูลดาวน์เท่านั้น บอสตารางตายตัวคำนวณเองอยู่แล้วไม่ต้องอัปเดต)
+BOSS_TRACKER_SHEET_NAME = (ไม่บังคับ) ชื่อแท็บในไฟล์ BOSS_TRACKER_SPREADSHEET_ID ค่าเริ่มต้นคือ "Boss Spawn"
 ------------------------------------------------------------------ */
 
 const {
@@ -26,8 +31,11 @@ const {
   CP_CHANNEL_ID,
   ALERT_CHANNEL_ID,
   COMMANDS_CHANNEL_ID,
+  BOSS_TRACKER_SPREADSHEET_ID,
+  BOSS_TRACKER_SHEET_NAME: BOSS_TRACKER_SHEET_NAME_ENV,
 } = process.env;
 let SHEET_NAME = SHEET_NAME_ENV || null; // จะถูกอัปเดตอัตโนมัติทุกสัปดาห์โดย ensureActiveSheet()
+const BOSS_TRACKER_SHEET_NAME = BOSS_TRACKER_SHEET_NAME_ENV || 'Boss Spawn';
 
 if (!DISCORD_BOT_TOKEN || !CHECKIN_CHANNEL_ID || !ANTHROPIC_API_KEY || !GOOGLE_SERVICE_ACCOUNT || !SPREADSHEET_ID) {
   console.error('❌ ตั้งค่า Environment Variables ไม่ครบ');
@@ -994,7 +1002,68 @@ async function insertOrUpdateBossColumn(bossQuery, dt) {
   return { action: 'inserted', dt };
 }
 
-// คำสั่ง !kill <boss> [HH:MM] [yesterday|today] — คำนวณเวลาเกิดรอบถัดไปจากคูลดาวน์ แล้วแทรก/อัปเดตคอลัมน์ให้เอง
+// ---------------------------------------------------------------------------
+// อัปเดตคอลัมน์ "Last Kill Date" / "Last Kill Time (UTC+7)" ในชีต Boss Spawn Tracker
+// (ไฟล์ Google Sheet คนละไฟล์กับ Attendance ตั้งค่าผ่าน BOSS_TRACKER_SPREADSHEET_ID)
+// ใช้เฉพาะบอสแบบคูลดาวน์เท่านั้น — บอสตารางตายตัว (มี WD1/T1 เป็นสูตรคำนวณเอง) ไม่ต้องแตะ
+// เขียนเฉพาะ "แถวฐาน" ของบอสตัวนั้น (แถวที่ไม่มีข้อความ "spawn #N today" ต่อท้าย) เพราะแถวที่มี
+// "spawn #2/#3 today" เป็นแถวคำนวณล่วงหน้าต่อเนื่องจากแถวฐาน ไม่ใช่แถวที่กรอกเวลาตายจริง
+// ---------------------------------------------------------------------------
+async function updateBossTrackerLastKill(bossKey, killDate) {
+  if (!BOSS_TRACKER_SPREADSHEET_ID) return { skipped: true, reason: 'no-env' };
+
+  const hdrRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: BOSS_TRACKER_SPREADSHEET_ID,
+    range: `${BOSS_TRACKER_SHEET_NAME}!A1:Z10`,
+  });
+  const hdrRows = hdrRes.data.values || [];
+  let headerRowIdx = -1, bossCol = -1, dateCol = -1, timeCol = -1;
+  for (let r = 0; r < Math.min(hdrRows.length, 10); r++) {
+    const row = hdrRows[r] || [];
+    const bIdx = row.findIndex(c => (c || '').trim().toLowerCase() === 'boss');
+    const dIdx = row.findIndex(c => (c || '').trim().toLowerCase() === 'last kill date');
+    const tIdx = row.findIndex(c => (c || '').trim().toLowerCase().startsWith('last kill time'));
+    if (bIdx !== -1 && dIdx !== -1 && tIdx !== -1) {
+      headerRowIdx = r; bossCol = bIdx; dateCol = dIdx; timeCol = tIdx;
+      break;
+    }
+  }
+  if (headerRowIdx === -1) return { skipped: true, reason: 'header-not-found' };
+
+  const dataRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: BOSS_TRACKER_SPREADSHEET_ID,
+    range: `${BOSS_TRACKER_SHEET_NAME}!A${headerRowIdx + 2}:Z500`,
+  });
+  const dataRows = dataRes.data.values || [];
+
+  let targetRow = -1;
+  for (let i = 0; i < dataRows.length; i++) {
+    const cell = (dataRows[i][bossCol] || '').trim();
+    if (!cell) continue;
+    if (/spawn\s*#\d+\s*today/i.test(cell)) continue; // ข้ามแถวคำนวณล่วงหน้า เอาแค่แถวฐาน
+    const m = cell.match(/\(([A-Za-z][A-Za-z\s]*)\)/); // ดึงชื่ออังกฤษในวงเล็บ เช่น "เวนาดัส (Venatus)" -> "Venatus"
+    const english = (m ? m[1] : cell).trim().toLowerCase();
+    if (english === bossKey || english.includes(bossKey) || bossKey.includes(english)) {
+      targetRow = headerRowIdx + 2 + i; // เลขแถวจริงใน sheet (1-indexed)
+      break;
+    }
+  }
+  if (targetRow === -1) return { skipped: true, reason: 'boss-row-not-found' };
+
+  const p2 = n => String(n).padStart(2, '0');
+  const dateStr = `${killDate.getUTCFullYear()}-${p2(killDate.getUTCMonth() + 1)}-${p2(killDate.getUTCDate())}`;
+  const timeStr = `${p2(killDate.getUTCHours())}:${p2(killDate.getUTCMinutes())}:00`;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: BOSS_TRACKER_SPREADSHEET_ID,
+    range: `${BOSS_TRACKER_SHEET_NAME}!${colToLetter(dateCol)}${targetRow}:${colToLetter(timeCol)}${targetRow}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[dateStr, timeStr]] },
+  });
+  return { updated: true, row: targetRow };
+}
+
+
 // คำสั่ง !fixnames — ไล่เช็คหัวคอลัมน์บอสทั้งหมดในชีตปัจจุบัน แก้ชื่อที่สะกดไม่ตรงมาตรฐานให้ถูกต้อง
 // คำสั่ง !maintenance [HH:MM] — ตอนเซิร์ฟปิดปรับปรุง บอสรอบเกิดทุกตัวจะเกิดพร้อมกันหมดทันทีตอนเซิร์ฟกลับมา
 // (ไม่ต้องรอคูลดาวน์อีกรอบ) คำสั่งนี้เขียนเวลา = เวลาเซิร์ฟกลับมาตรงๆ ให้ทุกบอสพร้อมกัน
@@ -1132,7 +1201,19 @@ async function handleKillCommand(message) {
   try {
     const result = await insertOrUpdateBossColumn(bossQuery, dt);
     const label = result.action === 'inserted' ? 'แทรกคอลัมน์ใหม่' : result.action === 'updated' ? 'ปรับเวลาคอลัมน์เดิม' : 'ไม่มีอะไรเปลี่ยน (เวลาตรงเดิมอยู่แล้ว)';
-    await message.reply(`✅ บันทึกเวลาตาย **${bossQuery}** (${label}) — เกิดใหม่ประมาณ ${dt} (คำนวณจากคูลดาวน์ ${cooldown} ชม.)`);
+
+    // อัปเดตชีต Boss Spawn Tracker ด้วย (ถ้าตั้งค่า BOSS_TRACKER_SPREADSHEET_ID ไว้) — ไม่ให้ล้มทั้งคำสั่งถ้าจุดนี้พัง
+    let trackerNote = '';
+    try {
+      const trackerResult = await updateBossTrackerLastKill(bossQuery, killDate);
+      if (trackerResult.updated) trackerNote = '\n📋 อัปเดต Boss Spawn Tracker ให้ด้วยแล้ว';
+      else if (trackerResult.reason === 'boss-row-not-found') trackerNote = `\n⚠️ หาแถวของ "${bossQuery}" ใน Boss Spawn Tracker ไม่เจอ (อัปเดตให้ไม่ได้)`;
+    } catch (trackerErr) {
+      console.error('updateBossTrackerLastKill error', trackerErr);
+      trackerNote = '\n⚠️ อัปเดต Boss Spawn Tracker ไม่สำเร็จ (แต่บันทึกใน Attendance เรียบร้อยแล้ว)';
+    }
+
+    await message.reply(`✅ บันทึกเวลาตาย **${bossQuery}** (${label}) — เกิดใหม่ประมาณ ${dt} (คำนวณจากคูลดาวน์ ${cooldown} ชม.)${trackerNote}`);
   } catch (err) {
     console.error(err);
     await message.reply('❌ เกิดข้อผิดพลาด: ' + err.message);
