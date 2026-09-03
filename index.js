@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { google } from 'googleapis';
 import fetch from 'node-fetch';
+import * as http from 'http';
 
 /* ---------------- ENV VARS ต้องตั้งค่าใน Railway ----------------
 DISCORD_BOT_TOKEN       = token ของบอทจาก Discord Developer Portal
@@ -980,6 +981,48 @@ async function insertOrUpdateBossColumn(bossQuery, dt) {
 
 // คำสั่ง !kill <boss> [HH:MM] [yesterday|today] — คำนวณเวลาเกิดรอบถัดไปจากคูลดาวน์ แล้วแทรก/อัปเดตคอลัมน์ให้เอง
 // คำสั่ง !fixnames — ไล่เช็คหัวคอลัมน์บอสทั้งหมดในชีตปัจจุบัน แก้ชื่อที่สะกดไม่ตรงมาตรฐานให้ถูกต้อง
+// คำสั่ง !maintenance [HH:MM] — ตอนเซิร์ฟปิดปรับปรุง บอสรอบเกิดทุกตัวจะเกิดพร้อมกันหมดทันทีตอนเซิร์ฟกลับมา
+// (ไม่ต้องรอคูลดาวน์อีกรอบ) คำสั่งนี้เขียนเวลา = เวลาเซิร์ฟกลับมาตรงๆ ให้ทุกบอสพร้อมกัน
+async function handleMaintenanceCommand(message, timeStr) {
+  await message.react('⏳');
+  try {
+    const now = thaiNowAnchored();
+    let restartTime = now;
+    if (timeStr) {
+      const [h, m] = timeStr.split(':').map(Number);
+      restartTime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, m));
+    }
+
+    // รวมบอสรอบเกิดที่ไม่ซ้ำกัน (COOLDOWN_HOURS มีสะกดซ้ำของบอสตัวเดียวกันปนอยู่)
+    const uniqueBosses = new Map();
+    for (const [key, cd] of Object.entries(COOLDOWN_HOURS)) {
+      const canon = resolveBossName(key) || key;
+      uniqueBosses.set(canon, cd);
+    }
+
+    const dt = fmtSheetDT(restartTime); // บอสทุกตัวเกิดพร้อมกันทันที ณ เวลาเซิร์ฟกลับมา
+    const results = [];
+    for (const [boss] of uniqueBosses) {
+      try {
+        const r = await insertOrUpdateBossColumn(boss, dt);
+        results.push(`${boss} → ${dt} (${r.action})`);
+      } catch (e) {
+        results.push(`${boss} → ❌ ${e.message}`);
+      }
+    }
+
+    await message.reactions.removeAll().catch(() => {});
+    await message.react('✅');
+    const preview = results.slice(0, 25).join('\n');
+    const more = results.length > 25 ? `\n...และอีก ${results.length - 25} ตัว` : '';
+    await message.reply(`✅ รีเซ็ตเวลาบอสรอบเกิดทั้งหมด ${uniqueBosses.size} ตัว ให้เกิดพร้อมกันจากเวลาเซิร์ฟกลับมา (${fmtSheetDT(restartTime)}):\n${preview}${more}`);
+  } catch (err) {
+    console.error(err);
+    await message.reactions.removeAll().catch(() => {});
+    try { await message.reply('❌ เกิดข้อผิดพลาด: ' + err.message); } catch (e) {}
+  }
+}
+
 async function handleFixNamesCommand(message) {
   await message.react('⏳');
   try {
@@ -1104,6 +1147,13 @@ client.on('messageCreate', async (message) => {
 
     if (COMMANDS_CHANNEL_ID && message.channel.id === COMMANDS_CHANNEL_ID && /^!fixnames\b/i.test(message.content.trim())) {
       await handleFixNamesCommand(message);
+      return;
+    }
+
+    if (COMMANDS_CHANNEL_ID && message.channel.id === COMMANDS_CHANNEL_ID && /^!maintenance\b/i.test(message.content.trim())) {
+      const arg = message.content.replace(/^!maintenance\s*/i, '').trim();
+      const timeMatch = /^\d{1,2}:\d{2}$/.test(arg) ? arg : null;
+      await handleMaintenanceCommand(message, timeMatch);
       return;
     }
 
@@ -1355,5 +1405,78 @@ client.on('messageCreate', async (message) => {
     try { await message.reply('❌ เกิดข้อผิดพลาด: ' + err.message); } catch (e) {}
   }
 });
+
+/* ---------------- Dashboard API (สำหรับหน้าเว็บ Guild Management) ----------------
+   endpoint อ่านอย่างเดียว ไม่มีการเขียนข้อมูลใดๆ — เปิดสาธารณะ ไม่ต้องล็อกอิน (เฟส 1)
+   หมายเหตุสำหรับอนาคต: ถ้าจะรองรับหลายกิลด์ ให้เพิ่ม query param เช่น ?guild=xxx
+   แล้วแมปไปหา SPREADSHEET_ID ของแต่ละกิลด์แทนการใช้ตัวแปรเดียวแบบตอนนี้ */
+async function fetchDashboardData() {
+  await ensureActiveSheet();
+  const range = `${SHEET_NAME}!A1:ZZ2000`;
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range });
+  const rows = res.data.values || [];
+
+  let labelRowIdx = -1, memberCol = -1;
+  for (let r = 0; r < Math.min(rows.length, 10); r++) {
+    const idx = (rows[r] || []).findIndex(c => (c || '').trim().toLowerCase() === 'member');
+    if (idx !== -1) { labelRowIdx = r; memberCol = idx; break; }
+  }
+  if (labelRowIdx === -1) throw new Error('หาคอลัมน์ Member ในชีตไม่เจอ');
+
+  const bossRow = rows[labelRowIdx] || [];
+  const dateRow = rows[labelRowIdx + 1] || [];
+  const labelRow = rows[labelRowIdx] || [];
+  const scoreColIdx = labelRow.findIndex(c => (c || '').trim().toLowerCase() === 'score');
+  const cpColIdx = labelRow.findIndex(c => (c || '').trim().toLowerCase() === 'cp');
+
+  const bosses = [];
+  for (let c = memberCol + 1; c < bossRow.length; c++) {
+    const name = (bossRow[c] || '').trim();
+    const dt = (dateRow[c] || '').trim();
+    if (!name) continue;
+    const isGD = name.toUpperCase().startsWith('GD');
+    bosses.push({ name, time: isGD ? null : dt, mandatory: MANDATORY_BOSSES.has(name.toLowerCase().replace(/^lv\.\d+\s*/i, '')) || false, gd: isGD });
+  }
+
+  const members = [];
+  for (let r = labelRowIdx + 2; r < rows.length; r++) {
+    const name = (rows[r][memberCol] || '').trim();
+    if (!name) continue;
+    const score = scoreColIdx !== -1 ? Number(rows[r][scoreColIdx]) || 0 : 0;
+    const cp = cpColIdx !== -1 ? Number((rows[r][cpColIdx] || '').toString().replace(/,/g, '')) || 0 : 0;
+    members.push({ name, score, cp });
+  }
+  members.sort((a, b) => b.score - a.score);
+
+  return { sheetName: SHEET_NAME, generatedAt: fmtSheetDT(thaiNowAnchored()), bosses, members };
+}
+
+const API_PORT = process.env.PORT || 3001;
+http.createServer(async (req, res) => {
+  const url = new URL(req.url || '/', `http://localhost:${API_PORT}`);
+  const headers = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
+
+  if (req.method === 'OPTIONS') { res.writeHead(204, headers); return res.end(); }
+
+  if (url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain', ...headers });
+    return res.end('OK');
+  }
+
+  if (url.pathname === '/api/dashboard') {
+    try {
+      const data = await fetchDashboardData();
+      res.writeHead(200, headers);
+      return res.end(JSON.stringify({ ok: true, ...data }));
+    } catch (err) {
+      console.error(err);
+      res.writeHead(500, headers);
+      return res.end(JSON.stringify({ ok: false, error: err.message }));
+    }
+  }
+
+  res.writeHead(404, headers);
+  res.end(JSON.stringify({ ok: false, error: 'not found' }));
+}).listen(API_PORT, () => console.log(`🌐 Dashboard API listening on port ${API_PORT}`));
 
 client.login(DISCORD_BOT_TOKEN);
