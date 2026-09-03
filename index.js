@@ -484,7 +484,22 @@ async function handleScheduleImage(message, image) {
 
     const sortedRows = rows
       .filter(r => r && r.boss && r.time)
-      .map(r => ({ boss: String(r.boss).trim(), dt: `${date} ${String(r.time).trim()}` }))
+      .map(r => {
+        const time = String(r.time).trim();
+        const hour = parseInt(time.split(':')[0], 10);
+        // หัวตารางในภาพระบุ "วันที่แบบ server day (UTC+8)" แต่เวลาที่ดึงมาคือคอลัมน์ UTC+7
+        // (เวลาไทย) ซึ่งช้ากว่า UTC+8 อยู่ 1 ชั่วโมง ผลคือช่วงเวลา 23:00-23:59 (UTC+7) ยังอยู่ใน
+        // "วันเดิม" ของเวลาไทย แต่ตกไปอยู่ใน server-day (UTC+8) ของวันถัดไปแล้ว — ต้องลบวันที่ที่
+        // อ่านมาจากหัวตารางออก 1 วัน เพื่อให้ตรงกับเวลาไทยจริงๆ ก่อนบันทึกลงชีต (ซึ่งใช้เวลาไทยล้วน)
+        let rowDate = date;
+        if (!Number.isNaN(hour) && hour === 23) {
+          const d = new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10)));
+          d.setUTCDate(d.getUTCDate() - 1);
+          const p2 = n => String(n).padStart(2, '0');
+          rowDate = `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`;
+        }
+        return { boss: String(r.boss).trim(), dt: `${rowDate} ${time}` };
+      })
       .sort((a, b) => a.dt.localeCompare(b.dt));
 
     let added = 0, skipped = 0, updated = 0;
