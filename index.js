@@ -37,6 +37,16 @@ const {
 let SHEET_NAME = SHEET_NAME_ENV || null; // จะถูกอัปเดตอัตโนมัติทุกสัปดาห์โดย ensureActiveSheet()
 const BOSS_TRACKER_SHEET_NAME = BOSS_TRACKER_SHEET_NAME_ENV || 'Boss Spawn';
 
+// บันทึกการ !kill ล่าสุดไว้ในหน่วยความจำ (ไม่ผูกกับชีต) เพื่อให้ Dashboard ขึ้นป้าย "เพิ่งถูกฆ่า" ได้ทันที
+// โดยไม่ต้องรอให้เวลานับถอยหลังหมดเอง — เก็บไว้ 10 นาทีตามเวลาจริงที่พิมพ์คำสั่ง (recordedAt) แล้วทิ้งอัตโนมัติ
+const RECENT_KILL_WINDOW_MS = 10 * 60000;
+const recentKills = [];
+function recordRecentKill(bossName, killDate) {
+  recentKills.push({ boss: bossName, killedAt: killDate.getTime(), recordedAt: Date.now() });
+  const cutoff = Date.now() - RECENT_KILL_WINDOW_MS;
+  while (recentKills.length && recentKills[0].recordedAt < cutoff) recentKills.shift();
+}
+
 if (!DISCORD_BOT_TOKEN || !CHECKIN_CHANNEL_ID || !ANTHROPIC_API_KEY || !GOOGLE_SERVICE_ACCOUNT || !SPREADSHEET_ID) {
   console.error('❌ ตั้งค่า Environment Variables ไม่ครบ');
   process.exit(1);
@@ -916,15 +926,47 @@ const COOLDOWN_HOURS = {
 // แยกชื่อบอส/เวลา/yesterday-today ออกจากข้อความ !kill (ตามรูปแบบของ RaidScout)
 function parseKillArgs(text) {
   const parts = text.trim().split(/\s+/).filter(Boolean);
-  let explicitDay = null;
-  if (parts.length && ['yesterday', 'today'].includes(parts[parts.length - 1].toLowerCase())) {
-    explicitDay = parts.pop().toLowerCase();
+  let explicitDay = null;   // 'yesterday' | 'today' (คำสัมพัทธ์ แบบเดิม ยังรองรับไว้)
+  let explicitDate = null;  // { day, month, year } จากการพิมพ์วันที่ตรงๆ แบบ DD/MM หรือ DD/MM/YYYY
+  let rejectedDateToken = null;
+  const dayWords = ['yesterday', 'today', 'เมื่อวาน', 'วันนี้'];
+  if (parts.length) {
+    const last = parts[parts.length - 1];
+    const dm = last.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+    if (dm) {
+      const day = +dm[1], month = +dm[2], year = dm[3] ? (dm[3].length === 2 ? 2000 + (+dm[3]) : +dm[3]) : null;
+      if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+        explicitDate = { day, month, year };
+      } else {
+        rejectedDateToken = last;
+      }
+      parts.pop();
+    } else if (dayWords.includes(last.toLowerCase())) {
+      const w = parts.pop().toLowerCase();
+      explicitDay = (w === 'เมื่อวาน') ? 'yesterday' : (w === 'วันนี้') ? 'today' : w;
+    }
   }
   let timeStr = null;
-  if (parts.length && /^\d{1,2}:\d{2}$/.test(parts[parts.length - 1])) {
-    timeStr = parts.pop();
+  let rejectedTimeToken = null;
+  if (parts.length) {
+    const last = parts[parts.length - 1];
+    // ยอมรับ "20:30", "20.30", "20：30" (colon เต็มความกว้างจากคีย์บอร์ดมือถือ), มี "น." หรือ "น" ต่อท้ายได้
+    const normalized = last
+      .replace(/：/g, ':')
+      .replace(/\./g, ':')
+      .replace(/น\.?$/u, '');
+    const m = normalized.match(/^(\d{1,2}):(\d{2})$/);
+    if (m) {
+      const hh = String(Math.min(23, +m[1])).padStart(2, '0');
+      timeStr = `${hh}:${m[2]}`;
+      parts.pop();
+    } else if (/\d{1,2}[:.：]\d{2}/.test(last)) {
+      // มีลักษณะคล้ายเวลาแต่ parse ไม่ผ่าน (เช่น ชั่วโมง/นาทีเกินช่วง) — เตือนแทนที่จะเงียบแล้วใช้เวลาปัจจุบัน
+      rejectedTimeToken = last;
+      parts.pop();
+    }
   }
-  return { bossText: parts.join(' '), timeStr, explicitDay };
+  return { bossText: parts.join(' '), timeStr, explicitDay, explicitDate, rejectedTimeToken, rejectedDateToken };
 }
 
 function fmtSheetDT(d) {
@@ -1167,9 +1209,9 @@ async function handleFixNamesCommand(message) {
 
 async function handleKillCommand(message) {
   const raw = message.content.replace(/^!kill\s*/i, '');
-  const { bossText, timeStr, explicitDay } = parseKillArgs(raw);
+  const { bossText, timeStr, explicitDay, explicitDate, rejectedTimeToken, rejectedDateToken } = parseKillArgs(raw);
   if (!bossText) {
-    await message.reply('รูปแบบ: `!kill <ชื่อบอส> [HH:MM] [yesterday|today]`\nตัวอย่าง: `!kill Venatus` หรือ `!kill Venatus 20:30 yesterday`');
+    await message.reply('รูปแบบ: `!kill <ชื่อบอส> [HH:MM] [DD/MM]`\nตัวอย่าง: `!kill Venatus` หรือ `!kill Venatus 20:30 03/09`\n(เวลาพิมพ์ `20.30` แทน `:` ก็ได้ ส่วนวันที่จะพิมพ์ `yesterday`/`เมื่อวาน` แทนก็ยังใช้ได้เหมือนเดิม)');
     return;
   }
   const bossQuery = resolveBossName(bossText);
@@ -1182,10 +1224,26 @@ async function handleKillCommand(message) {
     await message.reply(`❌ "${bossQuery}" ไม่ใช่บอสแบบรอบเกิด (คูลดาวน์) — คำสั่งนี้ใช้ได้เฉพาะบอสที่มีรอบเกิดเป็นชั่วโมงเท่านั้น บอสตารางตายตัวไม่ต้องใช้คำสั่งนี้`);
     return;
   }
+  if (rejectedDateToken) {
+    await message.reply(`❌ อ่านวันที่ "${rejectedDateToken}" ไม่ออก (วันหรือเดือนเกินช่วงที่เป็นไปได้) — ใช้รูปแบบ DD/MM เช่น \`03/09\` แล้วลองพิมพ์คำสั่งใหม่อีกครั้ง`);
+    return;
+  }
+  if (rejectedTimeToken) {
+    await message.reply(`❌ อ่านเวลา "${rejectedTimeToken}" ไม่ออก (ชั่วโมงหรือนาทีเกินช่วงที่เป็นไปได้) — ใช้รูปแบบ HH:MM เช่น \`20:30\` แล้วลองพิมพ์คำสั่งใหม่อีกครั้ง`);
+    return;
+  }
 
   const now = thaiNowAnchored();
   let killDate = now;
-  if (timeStr) {
+  if (explicitDate) {
+    const year = explicitDate.year || now.getUTCFullYear();
+    const [h, m] = timeStr ? timeStr.split(':').map(Number) : [now.getUTCHours(), now.getUTCMinutes()];
+    killDate = new Date(Date.UTC(year, explicitDate.month - 1, explicitDate.day, h, m));
+    // ไม่ได้พิมพ์ปีมา แล้วดันคำนวณได้วันที่ในอนาคตไกลเกินไป (เช่น ข้ามปีใหม่) — เดาว่าหมายถึงปีที่แล้ว
+    if (!explicitDate.year && killDate.getTime() - now.getTime() > 24 * 3600000) {
+      killDate.setUTCFullYear(killDate.getUTCFullYear() - 1);
+    }
+  } else if (timeStr) {
     const [h, m] = timeStr.split(':').map(Number);
     killDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, m));
     if (explicitDay === 'yesterday') {
@@ -1194,6 +1252,10 @@ async function handleKillCommand(message) {
       killDate.setUTCDate(killDate.getUTCDate() - 1); // เดาอัตโนมัติ: เวลาตายเป็นอนาคตไม่ได้ → ต้องเป็นเมื่อวาน
     }
   }
+  const p2 = n => String(n).padStart(2, '0');
+  const killedAtLabel = (timeStr || explicitDate)
+    ? `${killDate.getUTCFullYear()}-${p2(killDate.getUTCMonth() + 1)}-${p2(killDate.getUTCDate())} ${p2(killDate.getUTCHours())}:${p2(killDate.getUTCMinutes())} (ตามที่พิมพ์ระบุ)`
+    : `${p2(killDate.getUTCHours())}:${p2(killDate.getUTCMinutes())} (ไม่ได้ระบุเวลา — ใช้เวลาที่ส่งข้อความ)`;
 
   const nextSpawn = new Date(killDate.getTime() + cooldown * 3600000);
   const dt = fmtSheetDT(nextSpawn);
@@ -1201,6 +1263,7 @@ async function handleKillCommand(message) {
   try {
     const result = await insertOrUpdateBossColumn(bossQuery, dt);
     const label = result.action === 'inserted' ? 'แทรกคอลัมน์ใหม่' : result.action === 'updated' ? 'ปรับเวลาคอลัมน์เดิม' : 'ไม่มีอะไรเปลี่ยน (เวลาตรงเดิมอยู่แล้ว)';
+    recordRecentKill(bossQuery, killDate);
 
     // อัปเดตชีต Boss Spawn Tracker ด้วย (ถ้าตั้งค่า BOSS_TRACKER_SPREADSHEET_ID ไว้) — ไม่ให้ล้มทั้งคำสั่งถ้าจุดนี้พัง
     let trackerNote = '';
@@ -1213,7 +1276,7 @@ async function handleKillCommand(message) {
       trackerNote = '\n⚠️ อัปเดต Boss Spawn Tracker ไม่สำเร็จ (แต่บันทึกใน Attendance เรียบร้อยแล้ว)';
     }
 
-    await message.reply(`✅ บันทึกเวลาตาย **${bossQuery}** (${label}) — เกิดใหม่ประมาณ ${dt} (คำนวณจากคูลดาวน์ ${cooldown} ชม.)${trackerNote}`);
+    await message.reply(`✅ บันทึกเวลาตาย **${bossQuery}** ตอน ${killedAtLabel} (${label}) — เกิดใหม่ประมาณ ${dt} (คำนวณจากคูลดาวน์ ${cooldown} ชม.)${trackerNote}`);
   } catch (err) {
     console.error(err);
     await message.reply('❌ เกิดข้อผิดพลาด: ' + err.message);
@@ -1544,7 +1607,12 @@ async function fetchDashboardData() {
   }
   members.sort((a, b) => b.score - a.score);
 
-  return { sheetName: SHEET_NAME, generatedAt: fmtSheetDT(thaiNowAnchored()), bosses, members };
+  const cutoff = Date.now() - RECENT_KILL_WINDOW_MS;
+  const recentKillsOut = recentKills
+    .filter(k => k.recordedAt >= cutoff)
+    .map(k => ({ boss: k.boss, killedAt: k.killedAt, recordedAt: k.recordedAt }));
+
+  return { sheetName: SHEET_NAME, generatedAt: fmtSheetDT(thaiNowAnchored()), bosses, members, recentKills: recentKillsOut, serverNowMs: Date.now() };
 }
 
 const API_PORT = process.env.PORT || 3001;
