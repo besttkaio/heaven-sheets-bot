@@ -1059,18 +1059,23 @@ async function updateBossTrackerLastKill(bossKey, killDate) {
     range: `${BOSS_TRACKER_SHEET_NAME}!A1:Z10`,
   });
   const hdrRows = hdrRes.data.values || [];
+  const norm = s => (s || '').replace(/[\u00A0\u200B]/g, ' ').trim().toLowerCase(); // กันช่องว่างชนิดพิเศษ (NBSP/zero-width) ที่ trim() ปกติจับไม่ได้เสมอไป
   let headerRowIdx = -1, bossCol = -1, dateCol = -1, timeCol = -1;
   for (let r = 0; r < Math.min(hdrRows.length, 10); r++) {
     const row = hdrRows[r] || [];
-    const bIdx = row.findIndex(c => (c || '').trim().toLowerCase() === 'boss');
-    const dIdx = row.findIndex(c => (c || '').trim().toLowerCase() === 'last kill date');
-    const tIdx = row.findIndex(c => (c || '').trim().toLowerCase().startsWith('last kill time'));
+    const bIdx = row.findIndex(c => norm(c) === 'boss');
+    const dIdx = row.findIndex(c => norm(c).includes('last kill date'));
+    const tIdx = row.findIndex(c => norm(c).includes('last kill time'));
     if (bIdx !== -1 && dIdx !== -1 && tIdx !== -1) {
       headerRowIdx = r; bossCol = bIdx; dateCol = dIdx; timeCol = tIdx;
       break;
     }
   }
-  if (headerRowIdx === -1) return { skipped: true, reason: 'header-not-found' };
+  if (headerRowIdx === -1) {
+    // แนบตัวอย่างข้อความที่เจอจริงในแถวที่น่าจะเป็นหัวตาราง (แถวที่ 2 ปกติ) ไปด้วย เผื่อ debug ต่อได้ทันทีจาก Discord
+    const sampleRow = (hdrRows[1] || []).slice(0, 7).map(c => `"${c}"`).join(', ');
+    return { skipped: true, reason: 'header-not-found', sample: sampleRow };
+  }
 
   const dataRes = await sheets.spreadsheets.values.get({
     spreadsheetId: BOSS_TRACKER_SPREADSHEET_ID,
@@ -1276,7 +1281,7 @@ async function handleKillCommand(message) {
       } else if (trackerResult.reason === 'no-env') {
         trackerNote = '\n⚠️ ยังไม่ได้ตั้งค่า BOSS_TRACKER_SPREADSHEET_ID — Boss Spawn Tracker ไม่ได้อัปเดต';
       } else if (trackerResult.reason === 'header-not-found') {
-        trackerNote = '\n⚠️ หาหัวตาราง (Boss / Last Kill Date / Last Kill Time) ในแท็บ Boss Spawn ไม่เจอ — Boss Spawn Tracker ไม่ได้อัปเดต';
+        trackerNote = `\n⚠️ หาหัวตาราง (Boss / Last Kill Date / Last Kill Time) ในแท็บ Boss Spawn ไม่เจอ — Boss Spawn Tracker ไม่ได้อัปเดต\n   แถวที่ 2 ที่เจอจริง: ${trackerResult.sample || '(ว่างเปล่า)'}`;
       }
     } catch (trackerErr) {
       console.error('updateBossTrackerLastKill error', trackerErr);
