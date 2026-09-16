@@ -1269,8 +1269,15 @@ async function handleKillCommand(message) {
     let trackerNote = '';
     try {
       const trackerResult = await updateBossTrackerLastKill(bossQuery, killDate);
-      if (trackerResult.updated) trackerNote = '\n📋 อัปเดต Boss Spawn Tracker ให้ด้วยแล้ว';
-      else if (trackerResult.reason === 'boss-row-not-found') trackerNote = `\n⚠️ หาแถวของ "${bossQuery}" ใน Boss Spawn Tracker ไม่เจอ (อัปเดตให้ไม่ได้)`;
+      if (trackerResult.updated) {
+        trackerNote = '\n📋 อัปเดต Boss Spawn Tracker ให้ด้วยแล้ว';
+      } else if (trackerResult.reason === 'boss-row-not-found') {
+        trackerNote = `\n⚠️ หาแถวของ "${bossQuery}" ใน Boss Spawn Tracker ไม่เจอ (อัปเดตให้ไม่ได้)`;
+      } else if (trackerResult.reason === 'no-env') {
+        trackerNote = '\n⚠️ ยังไม่ได้ตั้งค่า BOSS_TRACKER_SPREADSHEET_ID — Boss Spawn Tracker ไม่ได้อัปเดต';
+      } else if (trackerResult.reason === 'header-not-found') {
+        trackerNote = '\n⚠️ หาหัวตาราง (Boss / Last Kill Date / Last Kill Time) ในแท็บ Boss Spawn ไม่เจอ — Boss Spawn Tracker ไม่ได้อัปเดต';
+      }
     } catch (trackerErr) {
       console.error('updateBossTrackerLastKill error', trackerErr);
       trackerNote = '\n⚠️ อัปเดต Boss Spawn Tracker ไม่สำเร็จ (แต่บันทึกใน Attendance เรียบร้อยแล้ว)';
